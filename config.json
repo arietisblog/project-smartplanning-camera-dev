@@ -10,7 +10,14 @@
             "5": "bus",
             "7": "truck"
         },
-        "tracking_history_frames": 10
+        "tracking_history_frames": 10,
+        "min_counting_interval": 2.0,
+        "min_movement_distance": 30
+    },
+    "tracking": {
+        "max_disappeared_frames": 30,
+        "max_distance": 100,
+        "min_confidence": 0.5
     },
     "counting": {
         "line_angle": 0.0,

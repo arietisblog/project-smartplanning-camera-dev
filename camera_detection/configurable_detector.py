@@ -7,6 +7,25 @@ import argparse
 import json
 import os
 import math
+from scipy.optimize import linear_sum_assignment
+from dataclasses import dataclass
+from typing import List, Dict, Tuple, Optional
+
+@dataclass
+class Vehicle:
+    """車両情報を格納するデータクラス"""
+    id: int
+    bbox: List[float]  # [x1, y1, x2, y2]
+    class_id: int
+    confidence: float
+    center: Tuple[float, float]  # (center_x, center_y)
+    last_seen: int  # 最後に見られたフレーム番号
+    is_counted: bool = False
+    track_history: List[Tuple[float, float]] = None  # 中心点の履歴
+
+    def __post_init__(self):
+        if self.track_history is None:
+            self.track_history = [self.center]
 
 class ConfigurableVehicleDetector:
     def __init__(self, config_path='config.json'):
@@ -18,6 +37,13 @@ class ConfigurableVehicleDetector:
         self.counting_line_angle = None
         self.counting_zone = None
         self.counted_vehicles = set()
+
+        # ハンガリアンアルゴリズム用の変数
+        self.vehicles: Dict[int, Vehicle] = {}  # 現在追跡中の車両
+        self.next_vehicle_id = 1  # 次の車両ID
+        self.frame_count = 0  # フレームカウンター
+        self.max_disappeared = self.config['tracking'].get('max_disappeared_frames', 30)  # 最大消失フレーム数
+        self.max_distance = self.config['tracking'].get('max_distance', 100)  # 最大マッチング距離
 
     def load_config(self, config_path):
         if not os.path.exists(config_path):
@@ -48,6 +74,11 @@ class ConfigurableVehicleDetector:
                     "7": "truck"     # トラック
                 },
                 "tracking_history_frames": 10 # 追跡履歴を保持するフレーム数
+            },
+            "tracking": {
+                "max_disappeared_frames": 30,  # 車両が消失してから削除するまでのフレーム数
+                "max_distance": 100,  # ハンガリアンアルゴリズムでの最大マッチング距離
+                "min_confidence": 0.5  # 追跡に使用する最小信頼度
             },
             "counting": {
                 "line_ratio": 0.6,   # カウントラインの画面高さに対する割合
@@ -97,6 +128,129 @@ class ConfigurableVehicleDetector:
         vehicle_classes = self.config['detection']['vehicle_classes']
         return str(class_id) in vehicle_classes
 
+    def calculate_distance(self, center1: Tuple[float, float], center2: Tuple[float, float]) -> float:
+        """2つの中心点間のユークリッド距離を計算"""
+        return math.sqrt((center1[0] - center2[0])**2 + (center1[1] - center2[1])**2)
+
+    def update_vehicle_tracking(self, detections: List[Tuple[List[float], int, float]]) -> None:
+        """
+        ハンガリアンアルゴリズムを使用して車両追跡を更新
+
+        Args:
+            detections: [(bbox, class_id, confidence), ...] のリスト
+        """
+        # 現在のフレームで検出された車両の中心点を計算
+        current_centers = []
+        current_detections = []
+
+        for bbox, class_id, confidence in detections:
+            if not self.is_vehicle(class_id):
+                continue
+
+            center_x = (bbox[0] + bbox[2]) / 2
+            center_y = (bbox[1] + bbox[3]) / 2
+            center = (center_x, center_y)
+
+            current_centers.append(center)
+            current_detections.append((bbox, class_id, confidence, center))
+
+        # 既存の車両がない場合、すべて新しい車両として追加
+        if not self.vehicles:
+            for bbox, class_id, confidence, center in current_detections:
+                vehicle = Vehicle(
+                    id=self.next_vehicle_id,
+                    bbox=bbox,
+                    class_id=class_id,
+                    confidence=confidence,
+                    center=center,
+                    last_seen=self.frame_count
+                )
+                self.vehicles[self.next_vehicle_id] = vehicle
+                self.next_vehicle_id += 1
+            return
+
+        # 既存の車両の中心点を取得
+        existing_centers = []
+        existing_ids = []
+        for vehicle_id, vehicle in self.vehicles.items():
+            existing_centers.append(vehicle.center)
+            existing_ids.append(vehicle_id)
+
+        # 距離行列を作成
+        if current_centers and existing_centers:
+            distance_matrix = np.zeros((len(current_centers), len(existing_centers)))
+
+            for i, current_center in enumerate(current_centers):
+                for j, existing_center in enumerate(existing_centers):
+                    distance = self.calculate_distance(current_center, existing_center)
+                    # 最大距離を超える場合は大きな値に設定
+                    if distance > self.max_distance:
+                        distance = 999999
+                    distance_matrix[i, j] = distance
+
+            # ハンガリアンアルゴリズムで最適なマッチングを見つける
+            row_indices, col_indices = linear_sum_assignment(distance_matrix)
+
+            # マッチングされた車両を更新
+            matched_current = set()
+            matched_existing = set()
+
+            for i, j in zip(row_indices, col_indices):
+                if distance_matrix[i, j] <= self.max_distance:
+                    # 既存の車両を更新
+                    vehicle_id = existing_ids[j]
+                    bbox, class_id, confidence, center = current_detections[i]
+
+                    vehicle = self.vehicles[vehicle_id]
+                    vehicle.bbox = bbox
+                    vehicle.class_id = class_id
+                    vehicle.confidence = confidence
+                    vehicle.center = center
+                    vehicle.last_seen = self.frame_count
+
+                    # 追跡履歴を更新
+                    vehicle.track_history.append(center)
+                    max_history = self.config['detection']['tracking_history_frames']
+                    if len(vehicle.track_history) > max_history:
+                        vehicle.track_history = vehicle.track_history[-max_history:]
+
+                    matched_current.add(i)
+                    matched_existing.add(j)
+
+            # マッチングされなかった既存の車両を削除（消失フレーム数が上限を超えた場合）
+            vehicles_to_remove = []
+            for j, vehicle_id in enumerate(existing_ids):
+                if j not in matched_existing:
+                    vehicle = self.vehicles[vehicle_id]
+                    if self.frame_count - vehicle.last_seen > self.max_disappeared:
+                        vehicles_to_remove.append(vehicle_id)
+
+            for vehicle_id in vehicles_to_remove:
+                del self.vehicles[vehicle_id]
+
+            # マッチングされなかった新しい検出を新しい車両として追加
+            for i, (bbox, class_id, confidence, center) in enumerate(current_detections):
+                if i not in matched_current:
+                    vehicle = Vehicle(
+                        id=self.next_vehicle_id,
+                        bbox=bbox,
+                        class_id=class_id,
+                        confidence=confidence,
+                        center=center,
+                        last_seen=self.frame_count
+                    )
+                    self.vehicles[self.next_vehicle_id] = vehicle
+                    self.next_vehicle_id += 1
+        else:
+            # 検出がない場合、既存の車両の消失フレーム数を増やす
+            vehicles_to_remove = []
+            for vehicle_id, vehicle in self.vehicles.items():
+                if self.frame_count - vehicle.last_seen > self.max_disappeared:
+                    vehicles_to_remove.append(vehicle_id)
+
+            for vehicle_id in vehicles_to_remove:
+                del self.vehicles[vehicle_id]
+
     def is_in_counting_zone(self, bbox):
         if self.counting_zone is None:
             return True
@@ -119,15 +273,14 @@ class ConfigurableVehicleDetector:
 
         return self.counting_line_y + y_offset
 
-    def has_crossed_line(self, vehicle_id, current_bbox, frame_width, frame_height):
+    def has_crossed_line(self, vehicle: Vehicle, frame_width: int, frame_height: int) -> bool:
         """
         車両がカウントラインを横断したかチェック（角度対応）
 
         Args:
-            vehicle_id (str): 車両のID (track_idを含む)
-            current_bbox (list): 現在のバウンディングボックス
-            frame_width (int): フレームの幅
-            frame_height (int): フレームの高さ
+            vehicle: 車両オブジェクト
+            frame_width: フレームの幅
+            frame_height: フレームの高さ
 
         Returns:
             bool: ラインを横断した場合True
@@ -135,97 +288,86 @@ class ConfigurableVehicleDetector:
         if self.counting_line_y is None:
             return False
 
-        # 車両の履歴を取得
-        history = self.tracked_vehicles[vehicle_id]
-        if len(history) < 2: # 少なくとも2つの履歴（現在と前回）が必要
+        # 車両の追跡履歴を取得
+        track_history = vehicle.track_history
+        if len(track_history) < 2:  # 少なくとも2つの履歴（現在と前回）が必要
             return False
 
         # 前回の位置と現在の位置を比較
-        prev_bbox = history[-2]
-        current_center_x = (current_bbox[0] + current_bbox[2]) / 2
-        current_center_y = (current_bbox[1] + current_bbox[3]) / 2
-        prev_center_x = (prev_bbox[0] + prev_bbox[2]) / 2
-        prev_center_y = (prev_bbox[1] + prev_bbox[3]) / 2
+        prev_center = track_history[-2]
+        current_center = track_history[-1]
 
         # 現在位置と前回位置でのカウントラインのY座標を計算
-        current_line_y = self.get_line_y_at_x(current_center_x, frame_width, frame_height)
-        prev_line_y = self.get_line_y_at_x(prev_center_x, frame_width, frame_height)
+        current_line_y = self.get_line_y_at_x(current_center[0], frame_width, frame_height)
+        prev_line_y = self.get_line_y_at_x(prev_center[0], frame_width, frame_height)
 
         direction = self.config['counting']['direction']
 
         if direction == "upward":
-            return (prev_center_y > prev_line_y and
-                    current_center_y <= current_line_y)
+            return (prev_center[1] > prev_line_y and
+                    current_center[1] <= current_line_y)
         elif direction == "downward":
-            return (prev_center_y < prev_line_y and
-                    current_center_y >= current_line_y)
+            return (prev_center[1] < prev_line_y and
+                    current_center[1] >= current_line_y)
         else:
-            return ((prev_center_y > prev_line_y and current_center_y <= current_line_y) or
-                    (prev_center_y < prev_line_y and current_center_y >= current_line_y))
+            return ((prev_center[1] > prev_line_y and current_center[1] <= current_line_y) or
+                    (prev_center[1] < prev_line_y and current_center[1] >= current_line_y))
 
 
     def process_frame(self, frame):
         frame_height, frame_width = frame.shape[:2]
+        self.frame_count += 1
 
-        results = self.model.track(frame, persist=True, verbose=False)
+        # YOLOで検出
+        results = self.model(frame, verbose=False)
 
+        # 検出結果を収集
+        detections = []
         for result in results:
             boxes = result.boxes
-            track_ids = boxes.id.int().cpu().tolist() if boxes.id is not None else []
-
             if boxes is not None:
-                for i, box in enumerate(boxes):
+                for box in boxes:
                     bbox = box.xyxy[0].cpu().numpy()
                     class_id = int(box.cls[0].cpu().numpy())
                     confidence = float(box.conf[0].cpu().numpy())
-
-                    # 追跡IDを取得。存在しない場合はNone（通常は発生しないはずだが念のため）
-                    track_id = track_ids[i] if track_ids else None
 
                     # 信頼度閾値チェック
                     confidence_threshold = self.config['model']['confidence_threshold']
                     if not self.is_vehicle(class_id) or confidence < confidence_threshold:
                         continue
 
-                    if track_id is None:
-                        continue
-
                     if not self.is_in_counting_zone(bbox):
                         continue
 
-                    # 車両IDとしてtrack_idとclass_idを組み合わせる
-                    # これにより、同じ車両は一貫したIDを持ち続ける
-                    vehicle_id = f"{class_id}_{track_id}"
+                    detections.append((bbox, class_id, confidence))
 
-                    # 車両の履歴を更新
-                    self.tracked_vehicles[vehicle_id].append(bbox)
+        # ハンガリアンアルゴリズムで車両追跡を更新
+        self.update_vehicle_tracking(detections)
 
-                    # 履歴が長すぎる場合は削除
-                    max_history = self.config['detection']['tracking_history_frames']
-                    if len(self.tracked_vehicles[vehicle_id]) > max_history:
-                        self.tracked_vehicles[vehicle_id] = self.tracked_vehicles[vehicle_id][-max_history:]
+        # 車両のカウントと描画
+        for vehicle_id, vehicle in self.vehicles.items():
+            # ライン横断チェック
+            if (not vehicle.is_counted and
+                self.has_crossed_line(vehicle, frame_width, frame_height)):
+                self.vehicle_count += 1
+                vehicle.is_counted = True
+                self.counted_vehicles.add(vehicle_id)
 
-                    # ライン横断チェック
-                    if (vehicle_id not in self.counted_vehicles and
-                        self.has_crossed_line(vehicle_id, bbox, frame_width, frame_height)):
-                        self.vehicle_count += 1
-                        self.counted_vehicles.add(vehicle_id)
+            # バウンディングボックスを描画
+            colors = self.config['display']['colors']
+            color = colors['counted_vehicle'] if vehicle.is_counted else colors['uncounted_vehicle']
+            cv2.rectangle(frame,
+                        (int(vehicle.bbox[0]), int(vehicle.bbox[1])),
+                        (int(vehicle.bbox[2]), int(vehicle.bbox[3])),
+                        color, 2)
 
-                    # バウンディングボックスを描画
-                    colors = self.config['display']['colors']
-                    color = colors['counted_vehicle'] if vehicle_id in self.counted_vehicles else colors['uncounted_vehicle']
-                    cv2.rectangle(frame,
-                                (int(bbox[0]), int(bbox[1])),
-                                (int(bbox[2]), int(bbox[3])),
-                                color, 2)
-
-                    # ラベルを描画（クラス名と追跡ID、信頼度）
-                    vehicle_classes = self.config['detection']['vehicle_classes']
-                    vehicle_name = vehicle_classes.get(str(class_id), f"class_{class_id}")
-                    label = f"{vehicle_name} ID:{track_id} Conf:{confidence:.2f}" # IDを表示に追加
-                    cv2.putText(frame, label,
-                              (int(bbox[0]), int(bbox[1] - 10)),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            # ラベルを描画（クラス名と追跡ID、信頼度）
+            vehicle_classes = self.config['detection']['vehicle_classes']
+            vehicle_name = vehicle_classes.get(str(vehicle.class_id), f"class_{vehicle.class_id}")
+            label = f"{vehicle_name} ID:{vehicle.id} Conf:{vehicle.confidence:.2f}"
+            cv2.putText(frame, label,
+                      (int(vehicle.bbox[0]), int(vehicle.bbox[1] - 10)),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         # カウントラインを描画（角度対応）
         if self.counting_line_y is not None:
