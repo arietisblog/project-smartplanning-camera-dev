@@ -5,10 +5,7 @@
     },
     "detection": {
         "vehicle_classes": {
-            "2": "car",
-            "3": "motorcycle",
-            "5": "bus",
-            "7": "truck"
+            "0": "person"
         },
         "tracking_history_frames": 10,
         "min_counting_interval": 2.0,
@@ -23,7 +20,7 @@
         "line_angle": 0.0,
         "line_ratio": 0.5,
         "zone_ratio": 0.9,
-        "direction": "downward"
+        "direction": "both"
     },
     "display": {
         "show_video": true,
@@ -58,7 +55,7 @@
         }
     },
     "output": {
-        "save_video": false,
+        "save_video": true,
         "video_codec": "mp4v",
         "screenshot_format": "jpg"
     }

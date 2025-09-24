@@ -13,7 +13,7 @@ from typing import List, Dict, Tuple, Optional
 
 @dataclass
 class Vehicle:
-    """車両情報を格納するデータクラス"""
+    """人物情報を格納するデータクラス"""
     id: int
     bbox: List[float]  # [x1, y1, x2, y2]
     class_id: int
@@ -27,11 +27,11 @@ class Vehicle:
         if self.track_history is None:
             self.track_history = [self.center]
 
-class ConfigurableVehicleDetector:
+class ConfigurablePersonDetector:
     def __init__(self, config_path='config.json'):
         self.config = self.load_config(config_path)
         self.model = YOLO(self.config['model']['path'])
-        self.vehicle_count = 0
+        self.person_count = 0
         self.tracked_vehicles = defaultdict(list)
         self.counting_line_y = None
         self.counting_line_angle = None
@@ -39,8 +39,8 @@ class ConfigurableVehicleDetector:
         self.counted_vehicles = set()
 
         # ハンガリアンアルゴリズム用の変数
-        self.vehicles: Dict[int, Vehicle] = {}  # 現在追跡中の車両
-        self.next_vehicle_id = 1  # 次の車両ID
+        self.vehicles: Dict[int, Vehicle] = {}  # 現在追跡中の人物
+        self.next_vehicle_id = 1  # 次の人物ID
         self.frame_count = 0  # フレームカウンター
         self.max_disappeared = self.config['tracking'].get('max_disappeared_frames', 30)  # 最大消失フレーム数
         self.max_distance = self.config['tracking'].get('max_distance', 100)  # 最大マッチング距離
@@ -68,15 +68,12 @@ class ConfigurableVehicleDetector:
             },
             "detection": {
                 "vehicle_classes": {
-                    "2": "car",      # 車
-                    "3": "motorcycle", # バイク
-                    "5": "bus",      # バス
-                    "7": "truck"     # トラック
+                    "0": "person"    # 人
                 },
                 "tracking_history_frames": 10 # 追跡履歴を保持するフレーム数
             },
             "tracking": {
-                "max_disappeared_frames": 30,  # 車両が消失してから削除するまでのフレーム数
+                "max_disappeared_frames": 30,  # 人物が消失してから削除するまでのフレーム数
                 "max_distance": 100,  # ハンガリアンアルゴリズムでの最大マッチング距離
                 "min_confidence": 0.5  # 追跡に使用する最小信頼度
             },
@@ -84,18 +81,18 @@ class ConfigurableVehicleDetector:
                 "line_ratio": 0.6,   # カウントラインの画面高さに対する割合
                 "line_angle": 0.0,   # カウントラインの角度（度数、0は水平）
                 "zone_ratio": 0.3,   # カウントゾーンの画面幅に対する割合
-                "direction": "upward" # カウント方向 ("upward", "downward", "both")
+                "direction": "both" # カウント方向 ("upward", "downward", "both")
             },
             "display": {
                 "show_video": True,
                 "save_screenshots": True,
                 "progress_interval": 30, # 進捗表示のフレーム間隔
                 "colors": {
-                    "counted_vehicle": [0, 255, 0],    # カウント済み車両のバウンディングボックス色 (BGR)
-                    "uncounted_vehicle": [0, 0, 255],  # 未カウント車両のバウンディングボックス色 (BGR)
+                    "counted_vehicle": [0, 255, 0],    # カウント済み人物のバウンディングボックス色 (BGR)
+                    "uncounted_vehicle": [0, 0, 255],  # 未カウント人物のバウンディングボックス色 (BGR)
                     "counting_line": [255, 0, 0],      # カウントラインの色 (BGR)
                     "counting_zone": [255, 255, 0],    # カウントゾーンの色 (BGR)
-                    "vehicle_count_text": [0, 255, 255] # 車両数テキストの色 (BGR)
+                    "vehicle_count_text": [0, 255, 255] # 人物数テキストの色 (BGR)
                 }
             },
             "output": {
@@ -134,12 +131,12 @@ class ConfigurableVehicleDetector:
 
     def update_vehicle_tracking(self, detections: List[Tuple[List[float], int, float]]) -> None:
         """
-        ハンガリアンアルゴリズムを使用して車両追跡を更新
+        ハンガリアンアルゴリズムを使用して人物追跡を更新
 
         Args:
             detections: [(bbox, class_id, confidence), ...] のリスト
         """
-        # 現在のフレームで検出された車両の中心点を計算
+        # 現在のフレームで検出された人物の中心点を計算
         current_centers = []
         current_detections = []
 
@@ -154,7 +151,7 @@ class ConfigurableVehicleDetector:
             current_centers.append(center)
             current_detections.append((bbox, class_id, confidence, center))
 
-        # 既存の車両がない場合、すべて新しい車両として追加
+        # 既存の人物がない場合、すべて新しい人物として追加
         if not self.vehicles:
             for bbox, class_id, confidence, center in current_detections:
                 vehicle = Vehicle(
@@ -169,7 +166,7 @@ class ConfigurableVehicleDetector:
                 self.next_vehicle_id += 1
             return
 
-        # 既存の車両の中心点を取得
+        # 既存の人物の中心点を取得
         existing_centers = []
         existing_ids = []
         for vehicle_id, vehicle in self.vehicles.items():
@@ -191,13 +188,13 @@ class ConfigurableVehicleDetector:
             # ハンガリアンアルゴリズムで最適なマッチングを見つける
             row_indices, col_indices = linear_sum_assignment(distance_matrix)
 
-            # マッチングされた車両を更新
+            # マッチングされた人物を更新
             matched_current = set()
             matched_existing = set()
 
             for i, j in zip(row_indices, col_indices):
                 if distance_matrix[i, j] <= self.max_distance:
-                    # 既存の車両を更新
+                    # 既存の人物を更新
                     vehicle_id = existing_ids[j]
                     bbox, class_id, confidence, center = current_detections[i]
 
@@ -217,7 +214,7 @@ class ConfigurableVehicleDetector:
                     matched_current.add(i)
                     matched_existing.add(j)
 
-            # マッチングされなかった既存の車両を削除（消失フレーム数が上限を超えた場合）
+            # マッチングされなかった既存の人物を削除（消失フレーム数が上限を超えた場合）
             vehicles_to_remove = []
             for j, vehicle_id in enumerate(existing_ids):
                 if j not in matched_existing:
@@ -228,7 +225,7 @@ class ConfigurableVehicleDetector:
             for vehicle_id in vehicles_to_remove:
                 del self.vehicles[vehicle_id]
 
-            # マッチングされなかった新しい検出を新しい車両として追加
+            # マッチングされなかった新しい検出を新しい人物として追加
             for i, (bbox, class_id, confidence, center) in enumerate(current_detections):
                 if i not in matched_current:
                     vehicle = Vehicle(
@@ -242,7 +239,7 @@ class ConfigurableVehicleDetector:
                     self.vehicles[self.next_vehicle_id] = vehicle
                     self.next_vehicle_id += 1
         else:
-            # 検出がない場合、既存の車両の消失フレーム数を増やす
+            # 検出がない場合、既存の人物の消失フレーム数を増やす
             vehicles_to_remove = []
             for vehicle_id, vehicle in self.vehicles.items():
                 if self.frame_count - vehicle.last_seen > self.max_disappeared:
@@ -275,10 +272,10 @@ class ConfigurableVehicleDetector:
 
     def has_crossed_line(self, vehicle: Vehicle, frame_width: int, frame_height: int) -> bool:
         """
-        車両がカウントラインを横断したかチェック（角度対応）
+        人物がカウントラインを横断したかチェック（角度対応）
 
         Args:
-            vehicle: 車両オブジェクト
+            vehicle: 人物オブジェクト
             frame_width: フレームの幅
             frame_height: フレームの高さ
 
@@ -288,7 +285,7 @@ class ConfigurableVehicleDetector:
         if self.counting_line_y is None:
             return False
 
-        # 車両の追跡履歴を取得
+        # 人物の追跡履歴を取得
         track_history = vehicle.track_history
         if len(track_history) < 2:  # 少なくとも2つの履歴（現在と前回）が必要
             return False
@@ -341,15 +338,15 @@ class ConfigurableVehicleDetector:
 
                     detections.append((bbox, class_id, confidence))
 
-        # ハンガリアンアルゴリズムで車両追跡を更新
+        # ハンガリアンアルゴリズムで人物追跡を更新
         self.update_vehicle_tracking(detections)
 
-        # 車両のカウントと描画
+        # 人物のカウントと描画
         for vehicle_id, vehicle in self.vehicles.items():
             # ライン横断チェック
             if (not vehicle.is_counted and
                 self.has_crossed_line(vehicle, frame_width, frame_height)):
-                self.vehicle_count += 1
+                self.person_count += 1
                 vehicle.is_counted = True
                 self.counted_vehicles.add(vehicle_id)
 
@@ -393,12 +390,12 @@ class ConfigurableVehicleDetector:
                         (self.counting_zone['x2'], self.counting_zone['y2']),
                         zone_color, 2)
 
-        # 車両数を表示
+        # 人物数を表示
         text_color = tuple(self.config['display']['colors']['vehicle_count_text'])
-        cv2.putText(frame, f"Vehicles: {self.vehicle_count}",
+        cv2.putText(frame, f"Persons: {self.person_count}",
                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
 
-        return frame, self.vehicle_count
+        return frame, self.person_count
 
     def process_video(self, video_path, output_path=None):
         cap = cv2.VideoCapture(video_path)
@@ -448,7 +445,7 @@ class ConfigurableVehicleDetector:
                 break
 
             # フレームを処理
-            processed_frame, vehicle_count = self.process_frame(frame)
+            processed_frame, person_count = self.process_frame(frame)
 
             # 出力動画に書き込み
             if out:
@@ -456,7 +453,7 @@ class ConfigurableVehicleDetector:
 
             # 動画を表示
             if show_video:
-                cv2.imshow('Vehicle Detection', processed_frame)
+                cv2.imshow('Person Detection', processed_frame)
 
                 # キー入力処理
                 key = cv2.waitKey(1) & 0xFF
@@ -474,7 +471,7 @@ class ConfigurableVehicleDetector:
             if frame_count % progress_interval == 0:
                 elapsed_time = time.time() - start_time
                 fps_processed = frame_count / elapsed_time
-                print(f"処理済みフレーム: {frame_count}, 車両数: {vehicle_count}, FPS: {fps_processed:.1f}")
+                print(f"処理済みフレーム: {frame_count}, 人物数: {person_count}, FPS: {fps_processed:.1f}")
 
         # リソースを解放
         cap.release()
@@ -484,19 +481,19 @@ class ConfigurableVehicleDetector:
 
         print(f"\n処理完了!")
         print(f"総フレーム数: {frame_count}")
-        print(f"検知された車両数: {self.vehicle_count}")
+        print(f"検知された人物数: {self.person_count}")
         print(f"処理時間: {time.time() - start_time:.2f}秒")
 
 def main():
-    parser = argparse.ArgumentParser(description='設定ファイルを使用した車両検知システム')
+    parser = argparse.ArgumentParser(description='設定ファイルを使用した人物検知システム')
     parser.add_argument('video_path', help='入力動画ファイルのパス')
     parser.add_argument('--config', '-c', default='config.json', help='設定ファイルのパス')
     parser.add_argument('--output', '-o', help='出力動画ファイルのパス')
 
     args = parser.parse_args()
 
-    # 車両検知器を作成
-    detector = ConfigurableVehicleDetector(args.config)
+    # 人物検知器を作成
+    detector = ConfigurablePersonDetector(args.config)
 
     # 動画を処理
     detector.process_video(args.video_path, args.output)
