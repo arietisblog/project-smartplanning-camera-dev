@@ -5,7 +5,7 @@
     },
     "detection": {
         "vehicle_classes": {
-            "0": "person"
+            "1": "bicycle"
         },
         "tracking_history_frames": 10,
         "min_counting_interval": 2.0,
