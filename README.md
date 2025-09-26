@@ -1,284 +1,167 @@
-# カメラ検知システム
+# リアルタイムオブジェクト検知Webアプリケーション
 
-YOLOv8を使用したオブジェクト検知・カウントシステムです。設定ファイルを通じて柔軟にカスタマイズ可能で、様々なオブジェクトの検知、追跡、カウント機能を提供します。
+YOLOv8を使用したリアルタイムオブジェクト検知・カウントシステムのWebアプリケーション版です。
+
+## プロジェクト構成
+
+```
+project-smartplanning-camera-dev/
+├── logic_base/           # 元の検知ロジック（Python）
+├── backend/             # FastAPI バックエンド
+├── frontend/            # NextJS フロントエンド
+├── docker-compose.yml   # Docker Compose設定
+├── start.sh            # 起動スクリプト
+├── stop.sh             # 停止スクリプト
+└── README.md
+```
 
 ## 機能
 
-- **オブジェクト検知**: YOLOv8モデルを使用した高精度なオブジェクト検知
-- **オブジェクト追跡**: フレーム間でのオブジェクト追跡機能
-- **カウント機能**: 設定可能なカウントラインとゾーンによるオブジェクトカウント
-- **可視化**: リアルタイムでの検知結果表示
-- **設定可能**: JSON設定ファイルによる柔軟なカスタマイズ
+- **リアルタイム動画検知**: WebSocketを使用したリアルタイム動画処理
+- **動画アップロード**: ブラウザから動画ファイルをアップロード
+- **設定可能**: 検知対象クラス、信頼度閾値、カウントライン設定
+- **リアルタイム表示**: 検知結果をリアルタイムでブラウザに表示
+- **カウント機能**: オブジェクトの通過を自動カウント
+
+## セットアップ
+
+### 🐳 Docker での一発起動（推奨）
+
+#### 開発モード（ホットリロード対応）
+```bash
+# 開発アプリケーションを起動
+./start.sh dev
+
+# 停止
+./stop.sh dev
+```
+
+#### 本番モード（最適化済み）
+```bash
+# 本番アプリケーションを起動
+./start.sh prod
+
+# 停止
+./stop.sh prod
+```
+
+#### 手動起動
+```bash
+# 環境変数ファイルを作成
+cp env.example .env
+
+# 開発モード
+docker-compose -f docker-compose.dev.yml up -d
+
+# 本番モード
+docker-compose -f docker-compose.prod.yml up -d
+
+# 停止
+docker-compose -f docker-compose.dev.yml down
+docker-compose -f docker-compose.prod.yml down
+```
+
+### 🔧 手動セットアップ
+
+#### 1. バックエンドのセットアップ
+
+```bash
+cd backend
+pip install -r requirements.txt
+python main.py
+```
+
+#### 2. フロントエンドのセットアップ
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+## 使用方法
+
+1. **動画アップロード**: ブラウザで動画ファイルをアップロード
+2. **設定調整**: 検知対象クラス、信頼度閾値、カウントライン設定を調整
+3. **検知開始**: 「検知開始」ボタンをクリック
+4. **リアルタイム表示**: 検知結果がリアルタイムで表示されます
+
+## アクセスURL
+
+- **フロントエンド**: http://localhost:3000
+- **バックエンドAPI**: http://localhost:8000
+- **API ドキュメント**: http://localhost:8000/docs
+
+## 便利なコマンド
+
+### 開発モード
+```bash
+# ログを確認
+docker-compose -f docker-compose.dev.yml logs -f
+
+# 特定のサービスのログを確認
+docker-compose -f docker-compose.dev.yml logs -f backend
+docker-compose -f docker-compose.dev.yml logs -f frontend
+
+# サービスを再起動
+docker-compose -f docker-compose.dev.yml restart
+
+# 完全にクリーンアップ
+docker-compose -f docker-compose.dev.yml down -v --rmi all
+
+# イメージを再ビルド
+docker-compose -f docker-compose.dev.yml build --no-cache
+```
+
+### 本番モード
+```bash
+# ログを確認
+docker-compose -f docker-compose.prod.yml logs -f
+
+# 特定のサービスのログを確認
+docker-compose -f docker-compose.prod.yml logs -f backend
+docker-compose -f docker-compose.prod.yml logs -f frontend
+
+# サービスを再起動
+docker-compose -f docker-compose.prod.yml restart
+
+# 完全にクリーンアップ
+docker-compose -f docker-compose.prod.yml down -v --rmi all
+
+# イメージを再ビルド
+docker-compose -f docker-compose.prod.yml build --no-cache
+```
+
+## 技術スタック
+
+### バックエンド
+- **FastAPI**: Web API フレームワーク
+- **WebSocket**: リアルタイム通信
+- **OpenCV**: 動画処理
+- **YOLOv8**: オブジェクト検知
+- **Python**: メイン言語
+
+### フロントエンド
+- **Next.js 16**: React フレームワーク
+- **TypeScript**: 型安全なJavaScript
+- **Tailwind CSS**: スタイリング
+- **shadcn/ui**: UI コンポーネント
+- **WebSocket**: リアルタイム通信
 
 ## 対応クラス
 
-YOLOv8は80種類のオブジェクトを検知できます。詳細は `YOLOv8_Classes.md` を参照してください。
+YOLOv8で検知可能な80種類のオブジェクトに対応：
 
-### 主な検知対象例
-- 人 (person)
-- 自転車 (bicycle)
-- 車 (car)
-- バイク (motorcycle)
-- バス (bus)
-- トラック (truck)
-- 動物 (cat, dog, horse など)
-- その他多数
+- **乗り物**: person, bicycle, car, motorcycle, bus, truck など
+- **動物**: cat, dog, horse, sheep, cow など
+- **その他**: 家具、家電、食べ物など
 
-## インストール
+詳細は `logic_base/YOLOv8_Classes.md` を参照してください。
 
-### 前提条件
+## ライセンス
 
-- Python 3.8以上
-- YOLOv8モデルファイル (`yolov8n.pt`)
+MIT License
 
-### 依存関係のインストール
+## 貢献
 
-#### pipを使用する場合
-
-```bash
-pip install -r requirements.txt
-```
-
-または
-
-```bash
-pip install opencv-python==4.8.1.78 ultralytics==8.0.196 numpy==1.24.3 matplotlib==3.7.2 Pillow==10.0.0
-```
-
-#### uvを使用する場合（推奨）
-
-```bash
-# pyproject.tomlから依存関係をインストール
-uv sync
-
-# または、仮想環境を作成してインストール
-uv venv
-source .venv/bin/activate  # Linux/macOS
-# .venv\Scripts\activate   # Windows
-uv sync
-```
-
-### YOLOv8モデルのダウンロード
-
-初回実行時に自動的にダウンロードされますが、手動でダウンロードする場合：
-
-```python
-from ultralytics import YOLO
-model = YOLO('yolov8n.pt')
-```
-
-## 設定ファイル (config.json)
-
-設定ファイルは以下の構造で構成されています：
-
-### 入力・出力設定
-
-```json
-"input": {
-    "video_path": null,              // 入力動画ファイルのパス（nullの場合はコマンドライン引数で指定）
-    "output_directory": "outputs"    // 出力ファイルの保存ディレクトリ
-}
-```
-
-### モデル設定
-
-```json
-"model": {
-    "path": "yolov8n.pt",           // YOLOv8モデルファイルのパス
-    "confidence_threshold": 0.6     // 検知信頼度の閾値 (0.0-1.0)
-}
-```
-
-### 検知設定
-
-```json
-"detection": {
-    "object_classes": {             // 検知対象のクラス
-        "1": "bicycle",             // 自転車
-        "2": "car",                 // 車
-        "3": "motorcycle"           // バイク
-    },
-    "tracking_history_frames": 10   // 追跡履歴を保持するフレーム数
-}
-```
-
-### カウント設定
-
-```json
-"counting": {
-    "line_angle": 0.0,              // カウントラインの角度（度数、0は水平）
-    "line_ratio": 0.5,              // カウントラインの画面高さに対する割合 (0.0-1.0)
-    "zone_ratio": 0.9,              // カウントゾーンの画面幅に対する割合 (0.0-1.0)
-    "direction": "downward"         // カウント方向 ("upward", "downward", "both")
-}
-```
-
-**カウント方向の説明:**
-- `"upward"`: 下から上への移動をカウント
-- `"downward"`: 上から下への移動をカウント
-- `"both"`: 両方向の移動をカウント
-
-### 表示設定
-
-```json
-"display": {
-    "show_video": true,             // 動画表示の有効/無効
-    "save_screenshots": true,       // スクリーンショット保存の有効/無効
-    "progress_interval": 30,        // 進捗表示のフレーム間隔
-        "colors": {                     // 表示色の設定 (BGR形式)
-            "counted_object": [0, 255, 0],       // カウント済みオブジェクト（緑）
-            "uncounted_object": [0, 0, 255],     // 未カウントオブジェクト（赤）
-            "counting_line": [255, 0, 0],        // カウントライン（青）
-            "counting_zone": [255, 255, 0],      // カウントゾーン（シアン）
-            "object_count_text": [128, 0, 0]     // オブジェクト数テキスト（茶色）
-        }
-}
-```
-
-### 出力設定
-
-```json
-"output": {
-    "save_video": false,            // 出力動画保存の有効/無効
-    "video_codec": "mp4v",          // 出力動画のコーデック
-    "screenshot_format": "jpg"      // スクリーンショットのフォーマット
-}
-```
-
-## 実行方法
-
-### 基本的な実行（コマンドライン引数で動画パス指定）
-
-```bash
-python configurable_detector.py 動画ファイルパス
-```
-
-### 設定ファイルで動画パスを指定して実行
-
-```bash
-# config.jsonでvideo_pathを設定した場合
-python configurable_detector.py
-```
-
-### 設定ファイルを指定して実行
-
-```bash
-python configurable_detector.py 動画ファイルパス --config カスタム設定.json
-```
-
-### 出力動画を指定して実行
-
-```bash
-python configurable_detector.py 動画ファイルパス --output 出力動画.mp4
-```
-
-### 例
-
-```bash
-# 基本的な実行（コマンドライン引数で動画パス指定）
-python configurable_detector.py inputs/1900-151662242_small.mp4
-
-# 設定ファイルで動画パスを指定（config.jsonでvideo_pathを設定）
-python configurable_detector.py
-
-# カスタム設定で実行
-python configurable_detector.py inputs/1900-151662242_small.mp4 --config my_config.json
-
-# 出力動画を保存
-python configurable_detector.py inputs/1900-151662242_small.mp4 --output result.mp4
-
-# 設定ファイルで出力ディレクトリを指定（outputs/フォルダに保存）
-python configurable_detector.py inputs/1900-151662242_small.mp4
-```
-
-## 操作方法
-
-実行中に以下のキー操作が可能です：
-
-- **`q`**: 処理を終了
-- **`s`**: 現在のフレームをスクリーンショットとして保存（`save_screenshots: true`の場合）
-
-## 出力
-
-### コンソール出力
-
-処理中に以下の情報が表示されます：
-
-- 処理済みフレーム数
-- 検知されたオブジェクト数
-- 処理速度（FPS）
-- 最終的な統計情報
-
-### ファイル出力
-
-設定に応じて以下のファイルが生成されます：
-
-- **出力動画**: `save_video: true`の場合
-- **スクリーンショット**: `s`キーを押した場合、または`save_screenshots: true`の場合
-
-## カスタマイズ例
-
-### 水平カウントラインの設定
-
-```json
-"counting": {
-    "line_angle": 0.0,
-    "line_ratio": 0.6,
-    "direction": "downward"
-}
-```
-
-### 斜めカウントラインの設定
-
-```json
-"counting": {
-    "line_angle": 15.0,
-    "line_ratio": 0.5,
-    "direction": "both"
-}
-```
-
-### 高精度検知の設定
-
-```json
-"model": {
-    "confidence_threshold": 0.8
-}
-```
-
-### 両方向カウントの設定
-
-```json
-"counting": {
-    "direction": "both"
-}
-```
-
-### 複数クラス検知の設定
-
-```json
-"detection": {
-    "object_classes": {
-        "0": "person",      // 人
-        "1": "bicycle",     // 自転車
-        "2": "car",         // 車
-        "3": "motorcycle"   // バイク
-    }
-}
-```
-
-### 動物検知の設定
-
-```json
-"detection": {
-    "object_classes": {
-        "15": "cat",        // 猫
-        "16": "dog",        // 犬
-        "17": "horse",      // 馬
-        "18": "sheep",      // 羊
-        "19": "cow"         // 牛
-    }
-}
-```
-
-
+プルリクエストやイシューの報告を歓迎します。
