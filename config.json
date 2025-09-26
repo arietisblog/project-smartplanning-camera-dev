@@ -1,11 +1,15 @@
 {
+    "input": {
+        "video_path": "画面収録 2025-09-24 10.53.31.mov",
+        "output_directory": "outputs"
+    },
     "model": {
         "path": "yolov8n.pt",
         "confidence_threshold": 0.6
     },
     "detection": {
-        "vehicle_classes": {
-            "1": "bicycle"
+        "object_classes": {
+            "3": "bike"
         },
         "tracking_history_frames": 10,
         "min_counting_interval": 2.0,
@@ -27,12 +31,12 @@
         "save_screenshots": true,
         "progress_interval": 30,
         "colors": {
-            "counted_vehicle": [
+            "counted_object": [
                 0,
                 255,
                 0
             ],
-            "uncounted_vehicle": [
+            "uncounted_object": [
                 0,
                 0,
                 255
@@ -47,7 +51,7 @@
                 255,
                 0
             ],
-            "vehicle_count_text": [
+            "object_count_text": [
                 128,
                 0,
                 0

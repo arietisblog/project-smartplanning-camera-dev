@@ -1,18 +1,28 @@
 # カメラ検知システム
 
-YOLOv8を使用した自転車検知・カウントシステムです。設定ファイルを通じて柔軟にカスタマイズ可能で、自転車の検知、追跡、カウント機能を提供します。
+YOLOv8を使用したオブジェクト検知・カウントシステムです。設定ファイルを通じて柔軟にカスタマイズ可能で、様々なオブジェクトの検知、追跡、カウント機能を提供します。
 
 ## 機能
 
-- **自転車検知**: YOLOv8モデルを使用した高精度な自転車検知
-- **自転車追跡**: フレーム間での自転車追跡機能
-- **カウント機能**: 設定可能なカウントラインとゾーンによる自転車カウント
+- **オブジェクト検知**: YOLOv8モデルを使用した高精度なオブジェクト検知
+- **オブジェクト追跡**: フレーム間でのオブジェクト追跡機能
+- **カウント機能**: 設定可能なカウントラインとゾーンによるオブジェクトカウント
 - **可視化**: リアルタイムでの検知結果表示
 - **設定可能**: JSON設定ファイルによる柔軟なカスタマイズ
 
 ## 対応クラス
 
+YOLOv8は80種類のオブジェクトを検知できます。詳細は `YOLOv8_Classes.md` を参照してください。
+
+### 主な検知対象例
+- 人 (person)
 - 自転車 (bicycle)
+- 車 (car)
+- バイク (motorcycle)
+- バス (bus)
+- トラック (truck)
+- 動物 (cat, dog, horse など)
+- その他多数
 
 ## インストール
 
@@ -61,6 +71,15 @@ model = YOLO('yolov8n.pt')
 
 設定ファイルは以下の構造で構成されています：
 
+### 入力・出力設定
+
+```json
+"input": {
+    "video_path": null,              // 入力動画ファイルのパス（nullの場合はコマンドライン引数で指定）
+    "output_directory": "outputs"    // 出力ファイルの保存ディレクトリ
+}
+```
+
 ### モデル設定
 
 ```json
@@ -74,8 +93,10 @@ model = YOLO('yolov8n.pt')
 
 ```json
 "detection": {
-    "vehicle_classes": {            // 検知対象のクラス
-        "1": "bicycle"              // 自転車
+    "object_classes": {             // 検知対象のクラス
+        "1": "bicycle",             // 自転車
+        "2": "car",                 // 車
+        "3": "motorcycle"           // バイク
     },
     "tracking_history_frames": 10   // 追跡履歴を保持するフレーム数
 }
@@ -105,11 +126,11 @@ model = YOLO('yolov8n.pt')
     "save_screenshots": true,       // スクリーンショット保存の有効/無効
     "progress_interval": 30,        // 進捗表示のフレーム間隔
         "colors": {                     // 表示色の設定 (BGR形式)
-            "counted_vehicle": [0, 255, 0],      // カウント済み自転車（緑）
-            "uncounted_vehicle": [0, 0, 255],    // 未カウント自転車（赤）
+            "counted_object": [0, 255, 0],       // カウント済みオブジェクト（緑）
+            "uncounted_object": [0, 0, 255],     // 未カウントオブジェクト（赤）
             "counting_line": [255, 0, 0],        // カウントライン（青）
             "counting_zone": [255, 255, 0],      // カウントゾーン（シアン）
-            "vehicle_count_text": [128, 0, 0]    // 自転車数テキスト（茶色）
+            "object_count_text": [128, 0, 0]     // オブジェクト数テキスト（茶色）
         }
 }
 ```
@@ -126,10 +147,17 @@ model = YOLO('yolov8n.pt')
 
 ## 実行方法
 
-### 基本的な実行
+### 基本的な実行（コマンドライン引数で動画パス指定）
 
 ```bash
 python configurable_detector.py 動画ファイルパス
+```
+
+### 設定ファイルで動画パスを指定して実行
+
+```bash
+# config.jsonでvideo_pathを設定した場合
+python configurable_detector.py
 ```
 
 ### 設定ファイルを指定して実行
@@ -147,14 +175,20 @@ python configurable_detector.py 動画ファイルパス --output 出力動画.m
 ### 例
 
 ```bash
-# 基本的な実行
+# 基本的な実行（コマンドライン引数で動画パス指定）
 python configurable_detector.py inputs/1900-151662242_small.mp4
+
+# 設定ファイルで動画パスを指定（config.jsonでvideo_pathを設定）
+python configurable_detector.py
 
 # カスタム設定で実行
 python configurable_detector.py inputs/1900-151662242_small.mp4 --config my_config.json
 
 # 出力動画を保存
 python configurable_detector.py inputs/1900-151662242_small.mp4 --output result.mp4
+
+# 設定ファイルで出力ディレクトリを指定（outputs/フォルダに保存）
+python configurable_detector.py inputs/1900-151662242_small.mp4
 ```
 
 ## 操作方法
@@ -171,7 +205,7 @@ python configurable_detector.py inputs/1900-151662242_small.mp4 --output result.
 処理中に以下の情報が表示されます：
 
 - 処理済みフレーム数
-- 検知された自転車数
+- 検知されたオブジェクト数
 - 処理速度（FPS）
 - 最終的な統計情報
 
@@ -217,6 +251,33 @@ python configurable_detector.py inputs/1900-151662242_small.mp4 --output result.
 ```json
 "counting": {
     "direction": "both"
+}
+```
+
+### 複数クラス検知の設定
+
+```json
+"detection": {
+    "object_classes": {
+        "0": "person",      // 人
+        "1": "bicycle",     // 自転車
+        "2": "car",         // 車
+        "3": "motorcycle"   // バイク
+    }
+}
+```
+
+### 動物検知の設定
+
+```json
+"detection": {
+    "object_classes": {
+        "15": "cat",        // 猫
+        "16": "dog",        // 犬
+        "17": "horse",      // 馬
+        "18": "sheep",      // 羊
+        "19": "cow"         // 牛
+    }
 }
 ```
 

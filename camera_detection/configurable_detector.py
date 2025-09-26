@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 
 @dataclass
-class Vehicle:
-    """自転車情報を格納するデータクラス"""
+class DetectedObject:
+    """検知されたオブジェクト情報を格納するデータクラス"""
     id: int
     bbox: List[float]  # [x1, y1, x2, y2]
     class_id: int
@@ -27,20 +27,20 @@ class Vehicle:
         if self.track_history is None:
             self.track_history = [self.center]
 
-class ConfigurableBicycleDetector:
+class ConfigurableObjectDetector:
     def __init__(self, config_path='config.json'):
         self.config = self.load_config(config_path)
         self.model = YOLO(self.config['model']['path'])
-        self.bicycle_count = 0
-        self.tracked_vehicles = defaultdict(list)
+        self.object_count = 0
+        self.tracked_objects = defaultdict(list)
         self.counting_line_y = None
         self.counting_line_angle = None
         self.counting_zone = None
-        self.counted_vehicles = set()
+        self.counted_objects = set()
 
         # ハンガリアンアルゴリズム用の変数
-        self.vehicles: Dict[int, Vehicle] = {}  # 現在追跡中の自転車
-        self.next_vehicle_id = 1  # 次の自転車ID
+        self.objects: Dict[int, DetectedObject] = {}  # 現在追跡中のオブジェクト
+        self.next_object_id = 1  # 次のオブジェクトID
         self.frame_count = 0  # フレームカウンター
         self.max_disappeared = self.config['tracking'].get('max_disappeared_frames', 30)  # 最大消失フレーム数
         self.max_distance = self.config['tracking'].get('max_distance', 100)  # 最大マッチング距離
@@ -62,18 +62,22 @@ class ConfigurableBicycleDetector:
 
     def get_default_config(self):
         return {
+            "input": {
+                "video_path": None,
+                "output_directory": "outputs"
+            },
             "model": {
                 "path": "yolov8n.pt",
                 "confidence_threshold": 0.5
             },
             "detection": {
-                "vehicle_classes": {
-                    "1": "bicycle"    # 自転車
+                "object_classes": {
+                    "1": "bicycle"    # 検知対象のオブジェクトクラス
                 },
                 "tracking_history_frames": 10 # 追跡履歴を保持するフレーム数
             },
             "tracking": {
-                "max_disappeared_frames": 30,  # 自転車が消失してから削除するまでのフレーム数
+                "max_disappeared_frames": 30,  # オブジェクトが消失してから削除するまでのフレーム数
                 "max_distance": 100,  # ハンガリアンアルゴリズムでの最大マッチング距離
                 "min_confidence": 0.5  # 追跡に使用する最小信頼度
             },
@@ -88,11 +92,11 @@ class ConfigurableBicycleDetector:
                 "save_screenshots": True,
                 "progress_interval": 30, # 進捗表示のフレーム間隔
                 "colors": {
-                    "counted_vehicle": [0, 255, 0],    # カウント済み自転車のバウンディングボックス色 (BGR)
-                    "uncounted_vehicle": [0, 0, 255],  # 未カウント自転車のバウンディングボックス色 (BGR)
+                    "counted_object": [0, 255, 0],    # カウント済みオブジェクトのバウンディングボックス色 (BGR)
+                    "uncounted_object": [0, 0, 255],  # 未カウントオブジェクトのバウンディングボックス色 (BGR)
                     "counting_line": [255, 0, 0],      # カウントラインの色 (BGR)
                     "counting_zone": [255, 255, 0],    # カウントゾーンの色 (BGR)
-                    "vehicle_count_text": [0, 255, 255] # 自転車数テキストの色 (BGR)
+                    "object_count_text": [0, 255, 255] # オブジェクト数テキストの色 (BGR)
                 }
             },
             "output": {
@@ -121,27 +125,27 @@ class ConfigurableBicycleDetector:
             'y2': frame_height
         }
 
-    def is_vehicle(self, class_id):
-        vehicle_classes = self.config['detection']['vehicle_classes']
-        return str(class_id) in vehicle_classes
+    def is_target_object(self, class_id):
+        object_classes = self.config['detection']['object_classes']
+        return str(class_id) in object_classes
 
     def calculate_distance(self, center1: Tuple[float, float], center2: Tuple[float, float]) -> float:
         """2つの中心点間のユークリッド距離を計算"""
         return math.sqrt((center1[0] - center2[0])**2 + (center1[1] - center2[1])**2)
 
-    def update_vehicle_tracking(self, detections: List[Tuple[List[float], int, float]]) -> None:
+    def update_object_tracking(self, detections: List[Tuple[List[float], int, float]]) -> None:
         """
-        ハンガリアンアルゴリズムを使用して自転車追跡を更新
+        ハンガリアンアルゴリズムを使用してオブジェクト追跡を更新
 
         Args:
             detections: [(bbox, class_id, confidence), ...] のリスト
         """
-        # 現在のフレームで検出された自転車の中心点を計算
+        # 現在のフレームで検出されたオブジェクトの中心点を計算
         current_centers = []
         current_detections = []
 
         for bbox, class_id, confidence in detections:
-            if not self.is_vehicle(class_id):
+            if not self.is_target_object(class_id):
                 continue
 
             center_x = (bbox[0] + bbox[2]) / 2
@@ -151,27 +155,27 @@ class ConfigurableBicycleDetector:
             current_centers.append(center)
             current_detections.append((bbox, class_id, confidence, center))
 
-        # 既存の自転車がない場合、すべて新しい自転車として追加
-        if not self.vehicles:
+        # 既存のオブジェクトがない場合、すべて新しいオブジェクトとして追加
+        if not self.objects:
             for bbox, class_id, confidence, center in current_detections:
-                vehicle = Vehicle(
-                    id=self.next_vehicle_id,
+                obj = DetectedObject(
+                    id=self.next_object_id,
                     bbox=bbox,
                     class_id=class_id,
                     confidence=confidence,
                     center=center,
                     last_seen=self.frame_count
                 )
-                self.vehicles[self.next_vehicle_id] = vehicle
-                self.next_vehicle_id += 1
+                self.objects[self.next_object_id] = obj
+                self.next_object_id += 1
             return
 
-        # 既存の自転車の中心点を取得
+        # 既存のオブジェクトの中心点を取得
         existing_centers = []
         existing_ids = []
-        for vehicle_id, vehicle in self.vehicles.items():
-            existing_centers.append(vehicle.center)
-            existing_ids.append(vehicle_id)
+        for object_id, obj in self.objects.items():
+            existing_centers.append(obj.center)
+            existing_ids.append(object_id)
 
         # 距離行列を作成
         if current_centers and existing_centers:
@@ -188,65 +192,65 @@ class ConfigurableBicycleDetector:
             # ハンガリアンアルゴリズムで最適なマッチングを見つける
             row_indices, col_indices = linear_sum_assignment(distance_matrix)
 
-            # マッチングされた自転車を更新
+            # マッチングされたオブジェクトを更新
             matched_current = set()
             matched_existing = set()
 
             for i, j in zip(row_indices, col_indices):
                 if distance_matrix[i, j] <= self.max_distance:
-                    # 既存の自転車を更新
-                    vehicle_id = existing_ids[j]
+                    # 既存のオブジェクトを更新
+                    object_id = existing_ids[j]
                     bbox, class_id, confidence, center = current_detections[i]
 
-                    vehicle = self.vehicles[vehicle_id]
-                    vehicle.bbox = bbox
-                    vehicle.class_id = class_id
-                    vehicle.confidence = confidence
-                    vehicle.center = center
-                    vehicle.last_seen = self.frame_count
+                    obj = self.objects[object_id]
+                    obj.bbox = bbox
+                    obj.class_id = class_id
+                    obj.confidence = confidence
+                    obj.center = center
+                    obj.last_seen = self.frame_count
 
                     # 追跡履歴を更新
-                    vehicle.track_history.append(center)
+                    obj.track_history.append(center)
                     max_history = self.config['detection']['tracking_history_frames']
-                    if len(vehicle.track_history) > max_history:
-                        vehicle.track_history = vehicle.track_history[-max_history:]
+                    if len(obj.track_history) > max_history:
+                        obj.track_history = obj.track_history[-max_history:]
 
                     matched_current.add(i)
                     matched_existing.add(j)
 
-            # マッチングされなかった既存の自転車を削除（消失フレーム数が上限を超えた場合）
-            vehicles_to_remove = []
-            for j, vehicle_id in enumerate(existing_ids):
+            # マッチングされなかった既存のオブジェクトを削除（消失フレーム数が上限を超えた場合）
+            objects_to_remove = []
+            for j, object_id in enumerate(existing_ids):
                 if j not in matched_existing:
-                    vehicle = self.vehicles[vehicle_id]
-                    if self.frame_count - vehicle.last_seen > self.max_disappeared:
-                        vehicles_to_remove.append(vehicle_id)
+                    obj = self.objects[object_id]
+                    if self.frame_count - obj.last_seen > self.max_disappeared:
+                        objects_to_remove.append(object_id)
 
-            for vehicle_id in vehicles_to_remove:
-                del self.vehicles[vehicle_id]
+            for object_id in objects_to_remove:
+                del self.objects[object_id]
 
-            # マッチングされなかった新しい検出を新しい自転車として追加
+            # マッチングされなかった新しい検出を新しいオブジェクトとして追加
             for i, (bbox, class_id, confidence, center) in enumerate(current_detections):
                 if i not in matched_current:
-                    vehicle = Vehicle(
-                        id=self.next_vehicle_id,
+                    obj = DetectedObject(
+                        id=self.next_object_id,
                         bbox=bbox,
                         class_id=class_id,
                         confidence=confidence,
                         center=center,
                         last_seen=self.frame_count
                     )
-                    self.vehicles[self.next_vehicle_id] = vehicle
-                    self.next_vehicle_id += 1
+                    self.objects[self.next_object_id] = obj
+                    self.next_object_id += 1
         else:
-            # 検出がない場合、既存の自転車の消失フレーム数を増やす
-            vehicles_to_remove = []
-            for vehicle_id, vehicle in self.vehicles.items():
-                if self.frame_count - vehicle.last_seen > self.max_disappeared:
-                    vehicles_to_remove.append(vehicle_id)
+            # 検出がない場合、既存のオブジェクトの消失フレーム数を増やす
+            objects_to_remove = []
+            for object_id, obj in self.objects.items():
+                if self.frame_count - obj.last_seen > self.max_disappeared:
+                    objects_to_remove.append(object_id)
 
-            for vehicle_id in vehicles_to_remove:
-                del self.vehicles[vehicle_id]
+            for object_id in objects_to_remove:
+                del self.objects[object_id]
 
     def is_in_counting_zone(self, bbox):
         if self.counting_zone is None:
@@ -270,12 +274,12 @@ class ConfigurableBicycleDetector:
 
         return self.counting_line_y + y_offset
 
-    def has_crossed_line(self, vehicle: Vehicle, frame_width: int, frame_height: int) -> bool:
+    def has_crossed_line(self, obj: DetectedObject, frame_width: int, frame_height: int) -> bool:
         """
-        自転車がカウントラインを横断したかチェック（角度対応）
+        オブジェクトがカウントラインを横断したかチェック（角度対応）
 
         Args:
-            vehicle: 自転車オブジェクト
+            obj: 検知されたオブジェクト
             frame_width: フレームの幅
             frame_height: フレームの高さ
 
@@ -285,8 +289,8 @@ class ConfigurableBicycleDetector:
         if self.counting_line_y is None:
             return False
 
-        # 自転車の追跡履歴を取得
-        track_history = vehicle.track_history
+        # オブジェクトの追跡履歴を取得
+        track_history = obj.track_history
         if len(track_history) < 2:  # 少なくとも2つの履歴（現在と前回）が必要
             return False
 
@@ -330,7 +334,7 @@ class ConfigurableBicycleDetector:
 
                     # 信頼度閾値チェック
                     confidence_threshold = self.config['model']['confidence_threshold']
-                    if not self.is_vehicle(class_id) or confidence < confidence_threshold:
+                    if not self.is_target_object(class_id) or confidence < confidence_threshold:
                         continue
 
                     if not self.is_in_counting_zone(bbox):
@@ -338,32 +342,32 @@ class ConfigurableBicycleDetector:
 
                     detections.append((bbox, class_id, confidence))
 
-        # ハンガリアンアルゴリズムで自転車追跡を更新
-        self.update_vehicle_tracking(detections)
+        # ハンガリアンアルゴリズムでオブジェクト追跡を更新
+        self.update_object_tracking(detections)
 
-        # 自転車のカウントと描画
-        for vehicle_id, vehicle in self.vehicles.items():
+        # オブジェクトのカウントと描画
+        for object_id, obj in self.objects.items():
             # ライン横断チェック
-            if (not vehicle.is_counted and
-                self.has_crossed_line(vehicle, frame_width, frame_height)):
-                self.bicycle_count += 1
-                vehicle.is_counted = True
-                self.counted_vehicles.add(vehicle_id)
+            if (not obj.is_counted and
+                self.has_crossed_line(obj, frame_width, frame_height)):
+                self.object_count += 1
+                obj.is_counted = True
+                self.counted_objects.add(object_id)
 
             # バウンディングボックスを描画
             colors = self.config['display']['colors']
-            color = colors['counted_vehicle'] if vehicle.is_counted else colors['uncounted_vehicle']
+            color = colors['counted_object'] if obj.is_counted else colors['uncounted_object']
             cv2.rectangle(frame,
-                        (int(vehicle.bbox[0]), int(vehicle.bbox[1])),
-                        (int(vehicle.bbox[2]), int(vehicle.bbox[3])),
+                        (int(obj.bbox[0]), int(obj.bbox[1])),
+                        (int(obj.bbox[2]), int(obj.bbox[3])),
                         color, 2)
 
             # ラベルを描画（クラス名と追跡ID、信頼度）
-            vehicle_classes = self.config['detection']['vehicle_classes']
-            vehicle_name = vehicle_classes.get(str(vehicle.class_id), f"class_{vehicle.class_id}")
-            label = f"{vehicle_name} ID:{vehicle.id} Conf:{vehicle.confidence:.2f}"
+            object_classes = self.config['detection']['object_classes']
+            object_name = object_classes.get(str(obj.class_id), f"class_{obj.class_id}")
+            label = f"{object_name} ID:{obj.id} Conf:{obj.confidence:.2f}"
             cv2.putText(frame, label,
-                      (int(vehicle.bbox[0]), int(vehicle.bbox[1] - 10)),
+                      (int(obj.bbox[0]), int(obj.bbox[1] - 10)),
                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         # カウントラインを描画（角度対応）
@@ -390,14 +394,27 @@ class ConfigurableBicycleDetector:
                         (self.counting_zone['x2'], self.counting_zone['y2']),
                         zone_color, 2)
 
-        # 自転車数を表示
-        text_color = tuple(self.config['display']['colors']['vehicle_count_text'])
-        cv2.putText(frame, f"Bicycles: {self.bicycle_count}",
+        # オブジェクト数を表示
+        text_color = tuple(self.config['display']['colors']['object_count_text'])
+        # 検知対象クラス名を取得して表示テキストを生成
+        object_classes = self.config['detection']['object_classes']
+        class_names = list(object_classes.values())
+        if len(class_names) == 1:
+            display_text = f"{class_names[0].title()}s: {self.object_count}"
+        else:
+            display_text = f"Objects: {self.object_count}"
+        cv2.putText(frame, display_text,
                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
 
-        return frame, self.bicycle_count
+        return frame, self.object_count
 
-    def process_video(self, video_path, output_path=None):
+    def process_video(self, video_path=None, output_path=None):
+        # 設定ファイルから動画パスを取得（コマンドライン引数が優先）
+        if video_path is None:
+            video_path = self.config['input']['video_path']
+            if video_path is None:
+                raise ValueError("動画パスが指定されていません。コマンドライン引数または設定ファイルで指定してください。")
+
         cap = cv2.VideoCapture(video_path)
 
         if not cap.isOpened():
@@ -417,10 +434,15 @@ class ConfigurableBicycleDetector:
         out = None
         if output_path or self.config['output']['save_video']:
             if not output_path:
-                # 出力パスが指定されていない場合、入力動画のファイル名から自動生成
+                # 出力パスが指定されていない場合、設定ファイルの出力ディレクトリを使用
+                output_dir = self.config['input']['output_directory']
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+
+                # 入力動画のファイル名から自動生成
                 base_name = os.path.basename(video_path)
                 name_without_ext = os.path.splitext(base_name)[0]
-                output_path = f"{name_without_ext}_output.mp4" # .mp4は固定
+                output_path = os.path.join(output_dir, f"{name_without_ext}_output.mp4")
 
             codec = self.config['output']['video_codec']
             fourcc = cv2.VideoWriter_fourcc(*codec)
@@ -445,7 +467,7 @@ class ConfigurableBicycleDetector:
                 break
 
             # フレームを処理
-            processed_frame, bicycle_count = self.process_frame(frame)
+            processed_frame, object_count = self.process_frame(frame)
 
             # 出力動画に書き込み
             if out:
@@ -453,7 +475,14 @@ class ConfigurableBicycleDetector:
 
             # 動画を表示
             if show_video:
-                cv2.imshow('Bicycle Detection', processed_frame)
+                # 検知対象クラス名を取得してウィンドウタイトルを生成
+                object_classes = self.config['detection']['object_classes']
+                class_names = list(object_classes.values())
+                if len(class_names) == 1:
+                    window_title = f'{class_names[0].title()} Detection'
+                else:
+                    window_title = 'Object Detection'
+                cv2.imshow(window_title, processed_frame)
 
                 # キー入力処理
                 key = cv2.waitKey(1) & 0xFF
@@ -461,7 +490,8 @@ class ConfigurableBicycleDetector:
                     break
                 elif key == ord('s') and save_screenshots:
                     screenshot_format = self.config['output']['screenshot_format']
-                    screenshot_path = f"screenshot_{frame_count}.{screenshot_format}"
+                    output_dir = self.config['input']['output_directory']
+                    screenshot_path = os.path.join(output_dir, f"screenshot_{frame_count}.{screenshot_format}")
                     cv2.imwrite(screenshot_path, processed_frame)
                     print(f"スクリーンショットを保存: {screenshot_path}")
 
@@ -471,7 +501,7 @@ class ConfigurableBicycleDetector:
             if frame_count % progress_interval == 0:
                 elapsed_time = time.time() - start_time
                 fps_processed = frame_count / elapsed_time
-                print(f"処理済みフレーム: {frame_count}, 自転車数: {bicycle_count}, FPS: {fps_processed:.1f}")
+                print(f"処理済みフレーム: {frame_count}, オブジェクト数: {object_count}, FPS: {fps_processed:.1f}")
 
         # リソースを解放
         cap.release()
@@ -481,21 +511,21 @@ class ConfigurableBicycleDetector:
 
         print(f"\n処理完了!")
         print(f"総フレーム数: {frame_count}")
-        print(f"検知された自転車数: {self.bicycle_count}")
+        print(f"検知されたオブジェクト数: {self.object_count}")
         print(f"処理時間: {time.time() - start_time:.2f}秒")
 
 def main():
-    parser = argparse.ArgumentParser(description='設定ファイルを使用した自転車検知システム')
-    parser.add_argument('video_path', help='入力動画ファイルのパス')
+    parser = argparse.ArgumentParser(description='設定ファイルを使用したオブジェクト検知システム')
+    parser.add_argument('video_path', nargs='?', help='入力動画ファイルのパス（設定ファイルでも指定可能）')
     parser.add_argument('--config', '-c', default='config.json', help='設定ファイルのパス')
     parser.add_argument('--output', '-o', help='出力動画ファイルのパス')
 
     args = parser.parse_args()
 
-    # 自転車検知器を作成
-    detector = ConfigurableBicycleDetector(args.config)
+    # オブジェクト検知器を作成
+    detector = ConfigurableObjectDetector(args.config)
 
-    # 動画を処理
+    # 動画を処理（コマンドライン引数が優先、なければ設定ファイルから取得）
     detector.process_video(args.video_path, args.output)
 
 if __name__ == "__main__":
