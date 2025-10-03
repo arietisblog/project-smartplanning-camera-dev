@@ -7,6 +7,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      - ./backend:/app
       - ./backend/temp_videos:/app/temp_videos
       - ./backend/outputs:/app/outputs
     environment:
@@ -22,8 +23,16 @@ services:
     container_name: object-detection-frontend
     ports:
       - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/next.config.ts:/app/next.config.ts
+      - ./frontend/tsconfig.json:/app/tsconfig.json
+      - ./frontend/postcss.config.mjs:/app/postcss.config.mjs
+      - /app/node_modules
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NODE_ENV=development
     depends_on:
       - backend
     networks:

@@ -24,10 +24,15 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ./frontend:/app
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/next.config.ts:/app/next.config.ts
+      - ./frontend/tsconfig.json:/app/tsconfig.json
+      - ./frontend/postcss.config.mjs:/app/postcss.config.mjs
       - /app/node_modules
     environment:
       - NEXT_PUBLIC_API_URL=http://backend:8000
+      - NODE_ENV=development
     depends_on:
       - backend
     networks:
