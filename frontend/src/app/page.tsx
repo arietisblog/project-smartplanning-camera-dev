@@ -43,6 +43,9 @@ export default function Home() {
   const [progress, setProgress] = useState(0)
   const [availableClasses, setAvailableClasses] = useState<Record<string, string>>({})
   const [isClient, setIsClient] = useState(false)
+  const [showPreview, setShowPreview] = useState(true)
+  const [videoThumbnail, setVideoThumbnail] = useState<string | null>(null)
+  const [isPreviewMode, setIsPreviewMode] = useState(false)
   const [config, setConfig] = useState<DetectionConfig>({
     object_classes: { '1': 'bicycle' },
     confidence_threshold: 0.6,
@@ -82,6 +85,7 @@ export default function Home() {
               setObjectCount(message.object_count || 0)
               setFrameCount(message.frame_count || 0)
               setFps(message.fps || 0)
+
             }
             break
           case 'progress':
@@ -118,6 +122,15 @@ export default function Home() {
     if (!file) return
 
     setVideoFile(file)
+
+    // サムネイルを生成
+    try {
+      const thumbnail = await generateThumbnail(file)
+      setVideoThumbnail(thumbnail)
+      setIsPreviewMode(true) // プレビューモードに切り替え
+    } catch (error) {
+      console.error('サムネイル生成エラー:', error)
+    }
 
     const formData = new FormData()
     formData.append('file', file)
@@ -158,6 +171,7 @@ export default function Home() {
 
       if (response.ok) {
         setIsProcessing(true)
+        setIsPreviewMode(false) // プレビューモードを終了
         setProgress(0)
         setObjectCount(0)
         setFrameCount(0)
@@ -204,6 +218,153 @@ export default function Home() {
         object_classes: newClasses
       }
     })
+  }
+
+  // 動画ファイルからサムネイルを生成
+  const generateThumbnail = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement('video')
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+
+      video.addEventListener('loadedmetadata', () => {
+        // 動画の最初のフレーム（1秒後）を取得
+        video.currentTime = 1
+      })
+
+      video.addEventListener('seeked', () => {
+        if (ctx) {
+          canvas.width = video.videoWidth
+          canvas.height = video.videoHeight
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+          const thumbnail = canvas.toDataURL('image/jpeg', 0.8)
+          resolve(thumbnail)
+        }
+      })
+
+      video.addEventListener('error', reject)
+      video.src = URL.createObjectURL(file)
+      video.load()
+    })
+  }
+
+  // 設定をリアルタイム更新
+  const updateConfig = async (newConfig: typeof config) => {
+    if (!isProcessing) return
+
+    try {
+      const apiUrl = API_BASE_URL.replace('http://backend', 'http://localhost')
+      await fetch(`${apiUrl}/update-config`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ config: newConfig }),
+      })
+    } catch (error) {
+      console.error('設定更新エラー:', error)
+    }
+  }
+
+  // 設定変更時のリアルタイム更新
+  useEffect(() => {
+    if (isProcessing) {
+      updateConfig(config)
+    }
+  }, [config.line_ratio, config.zone_ratio, config.direction, config.confidence_threshold, isProcessing])
+
+  // プレビュー表示の再描画
+  useEffect(() => {
+    // フレームが更新された時にプレビューを再描画
+    if (currentFrame && showPreview) {
+      // 少し遅延させてCanvasの描画を確実にする
+      setTimeout(() => {
+        const canvas = document.querySelector('canvas')
+        if (canvas) {
+          const ctx = canvas.getContext('2d')
+          if (ctx) {
+            // 実際の表示サイズを取得
+            const rect = canvas.getBoundingClientRect()
+            canvas.width = rect.width
+            canvas.height = rect.height
+
+            drawPreviewOverlay(canvas, ctx)
+          }
+        }
+      }, 200)
+    }
+  }, [currentFrame, showPreview, config.line_ratio, config.zone_ratio])
+
+  // プレビューオーバーレイを描画
+  const drawPreviewOverlay = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => {
+    if (!showPreview) return
+
+    const canvasWidth = canvas.width
+    const canvasHeight = canvas.height
+
+    // 画像の実際のサイズを取得（アスペクト比を考慮）
+    const img = canvas.parentElement?.querySelector('img')
+    if (!img) return
+
+    const imgRect = img.getBoundingClientRect()
+    const imgAspectRatio = img.naturalWidth / img.naturalHeight
+    const canvasAspectRatio = canvasWidth / canvasHeight
+
+    let drawWidth, drawHeight, offsetX, offsetY
+
+    if (imgAspectRatio > canvasAspectRatio) {
+      // 画像が横長の場合
+      drawWidth = canvasWidth
+      drawHeight = canvasWidth / imgAspectRatio
+      offsetX = 0
+      offsetY = (canvasHeight - drawHeight) / 2
+    } else {
+      // 画像が縦長の場合
+      drawWidth = canvasHeight * imgAspectRatio
+      drawHeight = canvasHeight
+      offsetX = (canvasWidth - drawWidth) / 2
+      offsetY = 0
+    }
+
+
+    // Canvasをクリア
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight)
+
+    // カウントラインを描画（実際の画像サイズで計算）
+    const lineY = offsetY + (drawHeight * config.line_ratio)
+    ctx.strokeStyle = '#8b5cf6'  // アプリの紫色（violet-500）
+    ctx.lineWidth = 3
+    ctx.setLineDash([10, 5])
+    ctx.beginPath()
+    ctx.moveTo(offsetX, lineY)
+    ctx.lineTo(offsetX + drawWidth, lineY)
+    ctx.stroke()
+
+    // カウントエリアを描画（高さはフル、幅の割合）
+    const zoneWidth = drawWidth * config.zone_ratio
+    const zoneHeight = drawHeight  // 高さは常にフルサイズ
+    const zoneX = offsetX + (drawWidth - zoneWidth) / 2
+    const zoneY = offsetY  // 高さはフルなのでオフセットのみ
+
+    ctx.strokeStyle = '#a855f7'  // アプリの紫色（purple-500）
+    ctx.lineWidth = 2
+    ctx.setLineDash([5, 5])
+    ctx.strokeRect(zoneX, zoneY, zoneWidth, zoneHeight)
+
+    // ラベルを描画
+    ctx.fillStyle = '#ffffff'
+    ctx.font = 'bold 14px Arial'
+    ctx.setLineDash([])
+
+    // 背景を追加してラベルを見やすくする
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
+    ctx.fillRect(offsetX + 5, offsetY + 5, 120, 50)
+
+    // ラベルテキスト
+    ctx.fillStyle = '#ffffff'
+    ctx.fillText(`Line: ${config.line_ratio.toFixed(1)}`, offsetX + 10, offsetY + 20)
+    ctx.fillText(`Zone: ${config.zone_ratio.toFixed(1)}`, offsetX + 10, offsetY + 40)
+
   }
 
   return (
@@ -361,6 +522,32 @@ export default function Home() {
                   </div>
                 </div>
 
+                {/* カウントエリア設定 */}
+                <div className="space-y-3">
+                  <Label htmlFor="zone-ratio" className="text-white font-semibold">
+                    カウントエリアサイズ: <span className="text-green-400 font-bold">{config.zone_ratio}</span>
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="zone-ratio"
+                      type="range"
+                      min="0.1"
+                      max="1.0"
+                      step="0.1"
+                      value={config.zone_ratio}
+                      onChange={(e) => setConfig(prev => ({
+                        ...prev,
+                        zone_ratio: parseFloat(e.target.value)
+                      }))}
+                      className="w-full h-2 bg-white/20 rounded-lg appearance-none cursor-pointer slider"
+                    />
+                    <div className="flex justify-between text-xs text-gray-400 mt-1">
+                      <span>0.1</span>
+                      <span>1.0</span>
+                    </div>
+                  </div>
+                </div>
+
                 {/* カウント方向 */}
                 <div className="space-y-3">
                   <Label htmlFor="direction" className="text-white font-semibold">カウント方向</Label>
@@ -379,6 +566,27 @@ export default function Home() {
                   </Select>
                 </div>
 
+                {/* プレビュー表示切り替え */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="preview-toggle" className="text-white font-semibold">プレビュー表示</Label>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowPreview(!showPreview)}
+                      className={`border-2 transition-all duration-300 ${showPreview
+                        ? 'bg-green-600/20 border-green-500 text-green-400 hover:bg-green-600/30'
+                        : 'bg-gray-600/20 border-gray-500 text-gray-400 hover:bg-gray-600/30'
+                        }`}
+                    >
+                      {showPreview ? 'ON' : 'OFF'}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    カウントラインとエリアの位置を動画上に表示します
+                  </p>
+                </div>
+
                 {/* 制御ボタン */}
                 <div className="flex gap-3 pt-4">
                   <Button
@@ -387,7 +595,7 @@ export default function Home() {
                     className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold py-3 rounded-lg shadow-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Play className="h-5 w-5 mr-2" />
-                    {isProcessing ? '処理中...' : '検知開始'}
+                    {isProcessing ? '処理中...' : isPreviewMode ? '検証開始' : '検知開始'}
                   </Button>
                   <Button
                     onClick={stopDetection}
@@ -413,22 +621,88 @@ export default function Home() {
                   </span>
                 </CardTitle>
                 <CardDescription className="text-gray-300">
-                  検知されたオブジェクト数: <span className="text-green-400 font-bold">{objectCount}</span>
+                  {isPreviewMode ? (
+                    <span>プレビューモード: パラメータを調整してから検証を開始してください</span>
+                  ) : (
+                    <>
+                      検知されたオブジェクト数: <span className="text-green-400 font-bold">{objectCount}</span>
+                    </>
+                  )}
                 </CardDescription>
               </CardHeader>
               <CardContent className="p-6">
-                <div className="aspect-video bg-slate-900 rounded-xl flex items-center justify-center border border-slate-700 overflow-hidden">
-                  {currentFrame ? (
-                    <img
-                      src={`data:image/jpeg;base64,${currentFrame}`}
-                      alt="検知結果"
-                      className="w-full h-full object-contain rounded-lg shadow-2xl"
-                    />
+                <div className="aspect-video bg-slate-900 rounded-xl flex items-center justify-center border border-slate-700 overflow-hidden relative">
+                  {isPreviewMode && videoThumbnail ? (
+                    <div className="relative w-full h-full">
+                      <img
+                        src={videoThumbnail}
+                        alt="動画プレビュー"
+                        className="w-full h-full object-contain rounded-lg shadow-2xl"
+                      />
+                      {/* プレビューオーバーレイ */}
+                      <canvas
+                        ref={(canvas) => {
+                          if (canvas && videoThumbnail && showPreview) {
+                            // 少し遅延させてDOMの更新を待つ
+                            setTimeout(() => {
+                              const ctx = canvas.getContext('2d')
+                              if (ctx) {
+                                // 実際の表示サイズを取得
+                                const rect = canvas.getBoundingClientRect()
+                                canvas.width = rect.width
+                                canvas.height = rect.height
+
+
+                                drawPreviewOverlay(canvas, ctx)
+                              }
+                            }, 50)
+                          }
+                        }}
+                        className="absolute inset-0 w-full h-full pointer-events-none"
+                        style={{
+                          imageRendering: 'pixelated',
+                          zIndex: 10
+                        }}
+                      />
+                    </div>
+                  ) : currentFrame ? (
+                    <div className="relative w-full h-full">
+                      <img
+                        src={`data:image/jpeg;base64,${currentFrame}`}
+                        alt="検知結果"
+                        className="w-full h-full object-contain rounded-lg shadow-2xl"
+                      />
+                      {/* 検証中のプレビューオーバーレイ */}
+                      <canvas
+                        ref={(canvas) => {
+                          if (canvas && currentFrame && showPreview) {
+                            // 少し遅延させてDOMの更新を待つ
+                            setTimeout(() => {
+                              const ctx = canvas.getContext('2d')
+                              if (ctx) {
+                                // 実際の表示サイズを取得
+                                const rect = canvas.getBoundingClientRect()
+                                canvas.width = rect.width
+                                canvas.height = rect.height
+
+
+                                drawPreviewOverlay(canvas, ctx)
+                              }
+                            }, 50)
+                          }
+                        }}
+                        className="absolute inset-0 w-full h-full pointer-events-none"
+                        style={{
+                          imageRendering: 'pixelated',
+                          zIndex: 10
+                        }}
+                      />
+                    </div>
                   ) : (
                     <div className="text-center text-gray-400">
                       <Video className="h-16 w-16 mx-auto mb-4 opacity-30" />
-                      <p className="text-lg font-medium">動画をアップロードして検知を開始してください</p>
-                      <p className="text-sm opacity-75 mt-2">検知開始後にリアルタイムで結果が表示されます</p>
+                      <p className="text-lg font-medium">動画をアップロードしてください</p>
+                      <p className="text-sm opacity-75 mt-2">アップロード後にプレビューでパラメータを調整できます</p>
                     </div>
                   )}
                 </div>

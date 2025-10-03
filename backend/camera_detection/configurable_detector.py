@@ -43,6 +43,15 @@ class ConfigurableObjectDetector:
         self.next_object_id = 1  # 次のオブジェクトID
         self.frame_count = 0  # フレームカウンター
         self.max_disappeared = self.config['tracking'].get('max_disappeared_frames', 30)  # 最大消失フレーム数
+
+    def reset_counting(self):
+        """カウント関連の変数をリセット"""
+        self.object_count = 0
+        self.tracked_objects = defaultdict(list)
+        self.counted_objects = set()
+        self.objects = {}
+        self.next_object_id = 1
+        self.frame_count = 0
         self.max_distance = self.config['tracking'].get('max_distance', 100)  # 最大マッチング距離
 
     def load_config(self, config_path):
@@ -94,8 +103,8 @@ class ConfigurableObjectDetector:
                 "colors": {
                     "counted_object": [0, 255, 0],    # カウント済みオブジェクトのバウンディングボックス色 (BGR)
                     "uncounted_object": [0, 0, 255],  # 未カウントオブジェクトのバウンディングボックス色 (BGR)
-                    "counting_line": [255, 0, 0],      # カウントラインの色 (BGR)
-                    "counting_zone": [255, 255, 0],    # カウントゾーンの色 (BGR)
+                    "counting_line": [246, 92, 139],   # カウントラインの色 (BGR) - アプリの紫色
+                    "counting_zone": [247, 85, 168],   # カウントゾーンの色 (BGR) - アプリの紫色
                     "object_count_text": [0, 255, 255] # オブジェクト数テキストの色 (BGR)
                 }
             },
@@ -114,6 +123,7 @@ class ConfigurableObjectDetector:
         self.counting_line_y = base_y
         self.counting_line_angle = line_angle
 
+
     def set_counting_zone(self, frame_width, frame_height):
         zone_ratio = self.config['counting']['zone_ratio']
         zone_width = int(frame_width * zone_ratio)
@@ -124,6 +134,7 @@ class ConfigurableObjectDetector:
             'y1': 0,
             'y2': frame_height
         }
+
 
     def is_target_object(self, class_id):
         object_classes = self.config['detection']['object_classes']
@@ -324,6 +335,7 @@ class ConfigurableObjectDetector:
 
         # 検出結果を収集
         detections = []
+        total_detections = 0
         for result in results:
             boxes = result.boxes
             if boxes is not None:
@@ -331,6 +343,7 @@ class ConfigurableObjectDetector:
                     bbox = box.xyxy[0].cpu().numpy()
                     class_id = int(box.cls[0].cpu().numpy())
                     confidence = float(box.conf[0].cpu().numpy())
+                    total_detections += 1
 
                     # 信頼度閾値チェック
                     confidence_threshold = self.config['model']['confidence_threshold']
@@ -400,9 +413,10 @@ class ConfigurableObjectDetector:
         object_classes = self.config['detection']['object_classes']
         class_names = list(object_classes.values())
         if len(class_names) == 1:
-            display_text = f"{class_names[0].title()}s: {self.object_count}"
+            display_text = f"{class_names[0].title()}sだよ: {self.object_count}"
         else:
             display_text = f"Objects: {self.object_count}"
+
         cv2.putText(frame, display_text,
                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
 
@@ -417,6 +431,9 @@ class ConfigurableObjectDetector:
 
         cap = cv2.VideoCapture(video_path)
 
+        # 動画キャプチャオブジェクトを保存（設定更新時に使用）
+        self.cap = cap
+
         if not cap.isOpened():
             print(f"エラー: 動画ファイル '{video_path}' を開けませんでした。")
             return
@@ -425,6 +442,7 @@ class ConfigurableObjectDetector:
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = int(cap.get(cv2.CAP_PROP_FPS))
+
 
         # カウントラインとゾーンを設定
         self.set_counting_line(frame_height, frame_width)

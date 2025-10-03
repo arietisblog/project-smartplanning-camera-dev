@@ -62,6 +62,9 @@ class StartDetectionRequest(BaseModel):
     config: DetectionConfig
     file_path: str
 
+class UpdateConfigRequest(BaseModel):
+    config: DetectionConfig
+
 # グローバル変数
 current_detector: Optional[ConfigurableObjectDetector] = None
 processing_task: Optional[asyncio.Task] = None
@@ -157,6 +160,39 @@ async def start_detection(request: StartDetectionRequest):
         print(f"検知器の作成エラー: {e}")
         raise HTTPException(status_code=500, detail=f"検知器の作成に失敗しました: {str(e)}")
 
+@app.post("/update-config")
+async def update_config(request: UpdateConfigRequest):
+    """検知設定をリアルタイム更新"""
+    global current_detector
+
+    if current_detector is None:
+        raise HTTPException(status_code=400, detail="検知が開始されていません")
+
+    try:
+        # 設定を更新
+        current_detector.config['model']['confidence_threshold'] = request.config.confidence_threshold
+        current_detector.config['detection']['object_classes'] = request.config.object_classes
+        current_detector.config['counting']['line_ratio'] = request.config.line_ratio
+        current_detector.config['counting']['line_angle'] = request.config.line_angle
+        current_detector.config['counting']['zone_ratio'] = request.config.zone_ratio
+        current_detector.config['counting']['direction'] = request.config.direction
+
+        # カウントラインとエリアを再設定（現在の動画の解像度を使用）
+        # 動画の実際の解像度を取得
+        if hasattr(current_detector, 'cap') and current_detector.cap is not None:
+            frame_width = int(current_detector.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_height = int(current_detector.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            current_detector.set_counting_line(frame_height, frame_width)
+            current_detector.set_counting_zone(frame_width, frame_height)
+            pass
+        else:
+            # 動画が読み込まれていない場合は、現在の設定を保持
+            pass
+
+        return {"message": "設定が更新されました", "config": request.config}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"設定更新エラー: {str(e)}")
+
 @app.post("/stop-detection")
 async def stop_detection():
     """検知処理を停止"""
@@ -201,7 +237,10 @@ async def process_video_async(video_path: str):
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
 
-    # カウントラインとゾーンを設定
+    # カウントをリセット
+    current_detector.reset_counting()
+
+    # カウントラインとゾーンを設定（元の解像度で設定）
     current_detector.set_counting_line(frame_height, frame_width)
     current_detector.set_counting_zone(frame_width, frame_height)
 
@@ -214,11 +253,31 @@ async def process_video_async(video_path: str):
             if not ret:
                 break
 
-            # フレームを処理
+            # フレームレート調整: 10FPSに調整（3フレームに1回処理）
+            if frame_count % 3 != 0:
+                frame_count += 1
+                continue
+
+            # 元の解像度でフレームを処理（カウント表示も元解像度で実行）
             processed_frame, object_count = current_detector.process_frame(frame)
 
-            # フレームをJPEGにエンコード
-            _, buffer = cv2.imencode('.jpg', processed_frame)
+            # アスペクト比を保ちながら最大640pxにリサイズ（表示用）
+            original_height, original_width = processed_frame.shape[:2]
+            max_width = 640
+
+            if original_width > max_width:
+                # 幅が640pxを超える場合、アスペクト比を保ってリサイズ
+                scale = max_width / original_width
+                new_width = max_width
+                new_height = int(original_height * scale)
+                processed_frame = cv2.resize(processed_frame, (new_width, new_height))
+            else:
+                # 幅が640px以下の場合、そのまま使用
+                new_width = original_width
+                new_height = original_height
+
+            # フレームをJPEGにエンコード（品質60%）
+            _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
             frame_base64 = base64.b64encode(buffer).decode('utf-8')
 
             # WebSocketでフレームとカウント情報を送信
@@ -234,8 +293,8 @@ async def process_video_async(video_path: str):
 
             frame_count += 1
 
-            # 進捗情報を送信
-            if frame_count % 30 == 0:
+            # 進捗情報を送信（10FPSに合わせて調整）
+            if frame_count % 10 == 0:
                 elapsed_time = asyncio.get_event_loop().time() - start_time
                 fps_processed = frame_count / elapsed_time
                 progress_message = {
@@ -246,8 +305,8 @@ async def process_video_async(video_path: str):
                 }
                 await manager.broadcast(json.dumps(progress_message))
 
-            # フレームレート制御
-            await asyncio.sleep(1.0 / fps)
+            # フレームレート制御（10FPSに固定）
+            await asyncio.sleep(0.1)  # 10FPS = 0.1秒間隔
 
     except asyncio.CancelledError:
         # 処理がキャンセルされた場合
