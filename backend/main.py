@@ -1,6 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 import cv2
 import numpy as np
 import json
@@ -381,6 +381,10 @@ async def process_video_async(video_path: str):
                     files = os.listdir(outputs_dir)
                     print(f"outputsディレクトリの内容: {files}")
 
+        # 検知結果を保存
+        if current_detector:
+            current_detector.save_detection_results()
+
         # 完了メッセージを送信
         if current_detector:
             print(f"最終カウント: {current_detector.object_count}")
@@ -534,6 +538,56 @@ async def stream_video(file_id: str):
     except Exception as e:
         print(f"ストリーミングエラー: {e}")
         raise HTTPException(status_code=500, detail=f"動画のストリーミングに失敗しました: {str(e)}")
+
+@app.get("/download-csv/{file_id}")
+async def download_csv(file_id: str):
+    """検知結果をCSV形式でダウンロード"""
+    try:
+        global current_detector
+
+        if current_detector is None:
+            raise HTTPException(status_code=400, detail="検知が開始されていません")
+
+        # 検知結果を取得
+        detection_results = current_detector.get_detection_results()
+
+        # CSVデータを生成
+        csv_content = generate_csv_content(detection_results)
+
+        # CSVファイルとして返す
+        headers = {
+            "Content-Disposition": f"attachment; filename=detection_results_{file_id}.csv",
+            "Content-Type": "text/csv; charset=utf-8"
+        }
+
+        return Response(content=csv_content, headers=headers)
+
+    except Exception as e:
+        print(f"CSVダウンロードエラー: {e}")
+        raise HTTPException(status_code=500, detail="CSVの生成に失敗しました")
+
+def generate_csv_content(detection_results: dict) -> str:
+    """検知結果からCSVコンテンツを生成"""
+    import csv
+    import io
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # ヘッダー行
+    writer.writerow(['クラス名', 'カウント数'])
+
+    # データ行
+    for class_id, class_name in detection_results.get('object_classes', {}).items():
+        # カウント数は実際のカウント数
+        counted_count = detection_results.get('total_counted', 0)
+        writer.writerow([class_name, counted_count])
+
+    # 合計行
+    total_counted = detection_results.get('total_counted', 0)
+    writer.writerow(['合計', total_counted])
+
+    return output.getvalue()
 
 @app.get("/download-video/{file_id}")
 async def download_video(file_id: str):

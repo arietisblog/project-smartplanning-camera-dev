@@ -144,6 +144,24 @@ export default function PreviewStep({
                         </p>
                     </div>
 
+                    {/* カウントライン角度設定 */}
+                    <div className="space-y-2">
+                        <Label className="text-white font-semibold text-sm">
+                            カウントライン角度: {config.line_angle}°
+                        </Label>
+                        <Slider
+                            value={[config.line_angle]}
+                            onValueChange={(value) => setConfig(prev => ({ ...prev, line_angle: value[0] }))}
+                            min={-90}
+                            max={90}
+                            step={1}
+                            className="w-full"
+                        />
+                        <p className="text-xs text-gray-500">
+                            カウントラインの角度（-90°〜90°、0°は水平、±90°は垂直）
+                        </p>
+                    </div>
+
                     {/* カウントエリア設定 */}
                     <div className="space-y-2">
                         <Label className="text-white font-semibold text-sm">
@@ -173,11 +191,11 @@ export default function PreviewStep({
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent className="bg-slate-800 border-slate-700">
-                                <SelectItem value="right" className="text-white hover:bg-slate-700">
-                                    上方向
+                                <SelectItem value="direction1" className="text-white hover:bg-slate-700">
+                                    方向1
                                 </SelectItem>
-                                <SelectItem value="left" className="text-white hover:bg-slate-700">
-                                    下方向
+                                <SelectItem value="direction2" className="text-white hover:bg-slate-700">
+                                    方向2
                                 </SelectItem>
                                 <SelectItem value="both" className="text-white hover:bg-slate-700">
                                     両方向

@@ -1,7 +1,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
-import { Play, Square, ArrowLeft, Video, Download, CheckCircle, RotateCw, AlertCircle } from 'lucide-react'
+import { Play, Square, ArrowLeft, Video, Download, CheckCircle, RotateCw, AlertCircle, FileText } from 'lucide-react'
 import { useState } from 'react'
 
 interface DetectionStepProps {
@@ -16,6 +16,7 @@ interface DetectionStepProps {
   onStopDetection: () => void
   onBack: () => void
   onDownloadVideo: () => void
+  onDownloadCSV: () => void
 }
 
 export default function DetectionStep({
@@ -29,7 +30,8 @@ export default function DetectionStep({
   uploadedFileId,
   onStopDetection,
   onBack,
-  onDownloadVideo
+  onDownloadVideo,
+  onDownloadCSV
 }: DetectionStepProps) {
   const [videoError, setVideoError] = useState(false)
   const [isDownloading, setIsDownloading] = useState(false)
@@ -74,30 +76,39 @@ export default function DetectionStep({
                   <ArrowLeft className="h-3 w-3 mr-1" />
                   戻る
                 </Button>
-                <Button
-                  onClick={async () => {
-                    setIsDownloading(true)
-                    try {
-                      await onDownloadVideo()
-                    } finally {
-                      setIsDownloading(false)
-                    }
-                  }}
-                  disabled={isDownloading}
-                  className="flex-1 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-semibold py-2 rounded-lg shadow-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isDownloading ? (
-                    <>
-                      <RotateCw className="h-4 w-4 mr-2 animate-spin" />
-                      ダウンロード中...
-                    </>
-                  ) : (
-                    <>
-                      <Download className="h-4 w-4 mr-2" />
-                      動画ダウンロード
-                    </>
-                  )}
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={async () => {
+                      setIsDownloading(true)
+                      try {
+                        await onDownloadVideo()
+                      } finally {
+                        setIsDownloading(false)
+                      }
+                    }}
+                    disabled={isDownloading}
+                    className="flex-1 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-semibold py-2 rounded-lg shadow-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isDownloading ? (
+                      <>
+                        <RotateCw className="h-4 w-4 mr-2 animate-spin" />
+                        ダウンロード中...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="h-4 w-4 mr-2" />
+                        動画ダウンロード
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    onClick={onDownloadCSV}
+                    className="flex-1 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white font-semibold py-2 rounded-lg shadow-lg transition-all duration-300"
+                  >
+                    <FileText className="h-4 w-4 mr-2" />
+                    CSVダウンロード
+                  </Button>
+                </div>
               </>
             ) : isProcessing ? (
               <div className="flex-1 flex items-center justify-center py-2">

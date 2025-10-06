@@ -42,6 +42,14 @@ class ConfigurableObjectDetector:
         self.objects: Dict[int, DetectedObject] = {}  # 現在追跡中のオブジェクト
         self.next_object_id = 1  # 次のオブジェクトID
         self.frame_count = 0  # フレームカウンター
+
+        # 検知結果を保存するための変数
+        self.final_detection_results = {
+            'detected_counts': {},
+            'counted_counts': {},
+            'total_detected': 0,
+            'total_counted': 0
+        }
         self.max_disappeared = self.config['tracking'].get('max_disappeared_frames', 30)  # 最大消失フレーム数
 
         # 動画出力用の変数
@@ -460,6 +468,72 @@ class ConfigurableObjectDetector:
                 print(f"警告: フレーム {self.frame_count} の書き込みに失敗しました")
 
         return frame, self.object_count
+
+    def save_detection_results(self):
+        """検知結果を保存"""
+        print(f"save_detection_results called")
+        print(f"tracked_objects keys: {list(self.tracked_objects.keys())}")
+        print(f"counted_objects: {self.counted_objects}")
+        print(f"objects keys: {list(self.objects.keys())}")
+
+        # クラス別の検知数とカウント数を計算
+        detected_counts = {}
+        counted_counts = {}
+
+        for class_id in self.config['detection']['object_classes'].keys():
+            detected_counts[class_id] = 0
+            counted_counts[class_id] = 0
+
+        # objectsから検知数を計算（現在追跡中のオブジェクト）
+        total_detected = 0
+        for obj_id, obj in self.objects.items():
+            if hasattr(obj, 'class_id'):
+                class_id = str(obj.class_id)
+                if class_id in detected_counts:
+                    detected_counts[class_id] += 1
+                    total_detected += 1
+                    print(f"Detected object: id={obj_id}, class_id={class_id}")
+
+        # counted_objectsからカウント数を計算
+        total_counted = len(self.counted_objects)
+        for obj_id in self.counted_objects:
+            # counted_objectsにはobj_idが格納されているので、
+            # そのオブジェクトのクラスIDを取得
+            if obj_id in self.objects:
+                obj = self.objects[obj_id]
+                if hasattr(obj, 'class_id'):
+                    class_id = str(obj.class_id)
+                    if class_id in counted_counts:
+                        counted_counts[class_id] += 1
+                        print(f"Counted object: id={obj_id}, class_id={class_id}")
+
+        # 結果を保存
+        self.final_detection_results = {
+            'detected_counts': detected_counts,
+            'counted_counts': counted_counts,
+            'total_detected': total_detected,
+            'total_counted': total_counted
+        }
+
+        print(f"検知結果を保存: detected={total_detected}, counted={total_counted}")
+        print(f"detected_counts: {detected_counts}")
+        print(f"counted_counts: {counted_counts}")
+
+    def get_detection_results(self):
+        """検知結果を取得"""
+        print(f"get_detection_results called")
+        print(f"object_count: {self.object_count}")
+
+        # フロントエンドで表示されている値を使用
+        # 検知数は現在追跡中のオブジェクト数、カウント数はobject_count
+        total_detected = len(self.objects)  # 現在追跡中のオブジェクト数
+        total_counted = self.object_count   # フロントエンドで表示されているカウント数
+
+        return {
+            'object_classes': self.config['detection']['object_classes'],
+            'total_detected': total_detected,
+            'total_counted': total_counted
+        }
 
     def process_video(self, video_path=None, output_path=None):
         # 設定ファイルから動画パスを取得（コマンドライン引数が優先）

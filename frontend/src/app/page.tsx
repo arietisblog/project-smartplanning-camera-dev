@@ -51,7 +51,7 @@ export default function Home() {
     line_ratio: 0.5,
     line_angle: 0.0,
     zone_ratio: 0.8,
-    direction: 'right'
+    direction: 'direction1'
   })
 
   const wsRef = useRef<WebSocket | null>(null)
@@ -241,6 +241,34 @@ export default function Home() {
     }
   }
 
+  const downloadCSV = async () => {
+    if (!uploadedFileId) return
+
+    try {
+      const apiUrl = API_BASE_URL.replace('http://backend', 'http://localhost')
+      const response = await fetch(`${apiUrl}/download-csv/${uploadedFileId}`)
+
+      if (response.ok) {
+        const blob = await response.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `detection_results_${uploadedFileId}.csv`
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(url)
+        document.body.removeChild(a)
+      } else {
+        alert('CSVのダウンロードに失敗しました')
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+    } catch (error) {
+      console.error('CSVダウンロードエラー:', error)
+      alert('CSVのダウンロードに失敗しました')
+      throw error
+    }
+  }
+
   const addObjectClass = () => {
     const newKey = Object.keys(availableClasses).find(key => !config.object_classes[key])
     if (newKey) {
@@ -260,6 +288,80 @@ export default function Home() {
       delete newClasses[key]
       return { ...prev, object_classes: newClasses }
     })
+  }
+
+  const drawDirectionArrows = (
+    ctx: CanvasRenderingContext2D,
+    offsetX: number,
+    offsetY: number,
+    drawWidth: number,
+    drawHeight: number,
+    baseLineY: number,
+    lineAngle: number,
+    direction: string
+  ) => {
+    const centerX = offsetX + drawWidth / 2
+    const centerY = offsetY + drawHeight / 2
+
+    // 矢印の設定
+    const arrowSize = 25
+    const arrowDistance = 50
+
+    ctx.strokeStyle = '#f59e0b' // amber-500
+    ctx.fillStyle = '#f59e0b'
+    ctx.lineWidth = 4
+    ctx.setLineDash([])
+
+    // 角度に応じて方向を計算
+    const angleRad = (lineAngle * Math.PI) / 180
+    const perpendicularAngle = angleRad + Math.PI / 2 // ラインに垂直な角度
+
+    if (direction === 'both') {
+      // 両方向の矢印
+      drawArrow(ctx, centerX, centerY, perpendicularAngle, arrowSize, arrowDistance)
+      drawArrow(ctx, centerX, centerY, perpendicularAngle + Math.PI, arrowSize, arrowDistance)
+    } else if (direction === 'direction1') {
+      // 方向1の矢印
+      drawArrow(ctx, centerX, centerY, perpendicularAngle, arrowSize, arrowDistance)
+    } else if (direction === 'direction2') {
+      // 方向2の矢印
+      drawArrow(ctx, centerX, centerY, perpendicularAngle + Math.PI, arrowSize, arrowDistance)
+    }
+  }
+
+  const drawArrow = (
+    ctx: CanvasRenderingContext2D,
+    centerX: number,
+    centerY: number,
+    angle: number,
+    size: number,
+    distance: number
+  ) => {
+    const endX = centerX + Math.cos(angle) * distance
+    const endY = centerY + Math.sin(angle) * distance
+
+    // 矢印の本体
+    ctx.beginPath()
+    ctx.moveTo(centerX, centerY)
+    ctx.lineTo(endX, endY)
+    ctx.stroke()
+
+    // 矢印の先端
+    const arrowAngle1 = angle - Math.PI / 6
+    const arrowAngle2 = angle + Math.PI / 6
+
+    ctx.beginPath()
+    ctx.moveTo(endX, endY)
+    ctx.lineTo(
+      endX - Math.cos(arrowAngle1) * size,
+      endY - Math.sin(arrowAngle1) * size
+    )
+    ctx.moveTo(endX, endY)
+    ctx.lineTo(
+      endX - Math.cos(arrowAngle2) * size,
+      endY - Math.sin(arrowAngle2) * size
+    )
+    ctx.stroke()
   }
 
   const drawPreviewOverlay = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => {
@@ -288,15 +390,42 @@ export default function Home() {
       offsetY = 0
     }
 
-    // カウントラインを描画
-    const lineY = offsetY + (drawHeight * config.line_ratio)
+    // カウントラインを描画（角度対応）
+    const baseLineY = offsetY + (drawHeight * config.line_ratio)
+    const centerX = offsetX + drawWidth / 2
+    const angleRad = (config.line_angle * Math.PI) / 180
+
     ctx.strokeStyle = '#8b5cf6' // violet-500
     ctx.lineWidth = 3
     ctx.setLineDash([10, 5])
     ctx.beginPath()
-    ctx.moveTo(offsetX, lineY)
-    ctx.lineTo(offsetX + drawWidth, lineY)
+
+    if (config.line_angle === 0) {
+      // 水平線の場合
+      ctx.moveTo(offsetX, baseLineY)
+      ctx.lineTo(offsetX + drawWidth, baseLineY)
+    } else if (Math.abs(config.line_angle) === 90) {
+      // 垂直線の場合（±90°）
+      const centerX = offsetX + drawWidth / 2
+      ctx.moveTo(centerX, offsetY)
+      ctx.lineTo(centerX, offsetY + drawHeight)
+    } else {
+      // 斜め線の場合
+      const halfWidth = drawWidth / 2
+      const yOffset = halfWidth * Math.tan(angleRad)
+
+      const startX = offsetX
+      const startY = baseLineY - yOffset
+      const endX = offsetX + drawWidth
+      const endY = baseLineY + yOffset
+
+      ctx.moveTo(startX, startY)
+      ctx.lineTo(endX, endY)
+    }
     ctx.stroke()
+
+    // カウント方向の矢印を描画
+    drawDirectionArrows(ctx, offsetX, offsetY, drawWidth, drawHeight, baseLineY, config.line_angle, config.direction)
 
     // カウントエリアを描画
     const zoneWidth = drawWidth * config.zone_ratio
@@ -312,10 +441,10 @@ export default function Home() {
     // ラベルを描画
     ctx.setLineDash([])
     ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
-    ctx.fillRect(offsetX + 10, lineY - 25, 120, 20)
+    ctx.fillRect(offsetX + 10, baseLineY - 25, 120, 20)
     ctx.fillStyle = '#8b5cf6'
     ctx.font = 'bold 14px Arial'
-    ctx.fillText('カウントライン', offsetX + 15, lineY - 10)
+    ctx.fillText('カウントライン', offsetX + 15, baseLineY - 10)
 
     ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
     ctx.fillRect(zoneX + 10, zoneY + 10, 100, 20)
@@ -432,6 +561,7 @@ export default function Home() {
                 onStopDetection={stopDetection}
                 onBack={() => setCurrentStep('preview')}
                 onDownloadVideo={downloadVideo}
+                onDownloadCSV={downloadCSV}
               />
             )}
           </div>
