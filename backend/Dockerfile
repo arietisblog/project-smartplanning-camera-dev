@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     libtiff-dev \
     libopenblas-dev \
     python3-dev \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # 作業ディレクトリを設定

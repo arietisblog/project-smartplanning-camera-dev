@@ -6,6 +6,7 @@ import numpy as np
 import json
 import asyncio
 import base64
+import subprocess
 from typing import Dict, List, Optional
 import os
 from camera_detection.configurable_detector import ConfigurableObjectDetector
@@ -138,7 +139,7 @@ async def start_detection(request: StartDetectionRequest):
             }
         },
         "output": {
-            "save_video": False,
+            "save_video": True,
             "video_codec": "mp4v",
             "screenshot_format": "jpg"
         }
@@ -220,12 +221,17 @@ async def process_video_async(video_path: str):
     """非同期で動画処理を実行"""
     global current_detector
 
+    print(f"process_video_async開始: {video_path}")
+
     if not current_detector:
+        print("エラー: current_detectorがNoneです")
         return
 
+    print("動画ファイルを開いています...")
     cap = cv2.VideoCapture(video_path)
 
     if not cap.isOpened():
+        print(f"エラー: 動画ファイル '{video_path}' を開けませんでした")
         await manager.broadcast(json.dumps({
             "type": "error",
             "message": f"動画ファイル '{video_path}' を開けませんでした"
@@ -237,20 +243,35 @@ async def process_video_async(video_path: str):
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
 
+    print(f"動画情報: {frame_width}x{frame_height}, FPS: {fps}")
+
     # カウントをリセット
+    print("カウントをリセット中...")
     current_detector.reset_counting()
 
     # カウントラインとゾーンを設定（元の解像度で設定）
+    print("カウントラインとゾーンを設定中...")
     current_detector.set_counting_line(frame_height, frame_width)
     current_detector.set_counting_zone(frame_width, frame_height)
 
+    # 動画ライターをセットアップ
+    # video_pathからファイルIDを抽出
+    video_filename = os.path.basename(video_path)
+    file_id = video_filename.split('_')[0]  # ファイルID部分を取得
+    output_path = f"outputs/{file_id}_output.mp4"
+    os.makedirs("outputs", exist_ok=True)
+    current_detector.setup_video_writer(frame_width, frame_height, fps, output_path)
+    print(f"出力動画パス: {output_path}")
+
     frame_count = 0
     start_time = asyncio.get_event_loop().time()
+    print("フレーム処理を開始します...")
 
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
+                print("動画の終了に到達しました")
                 break
 
             # フレームレート調整: 10FPSに調整（3フレームに1回処理）
@@ -259,6 +280,8 @@ async def process_video_async(video_path: str):
                 continue
 
             # 元の解像度でフレームを処理（カウント表示も元解像度で実行）
+            if frame_count % 30 == 0:  # 30フレームごとにログ出力
+                print(f"フレーム {frame_count} を処理中...")
             processed_frame, object_count = current_detector.process_frame(frame)
 
             # アスペクト比を保ちながら最大640pxにリサイズ（表示用）
@@ -289,6 +312,8 @@ async def process_video_async(video_path: str):
                 "fps": fps
             }
 
+            if frame_count % 30 == 0:  # 30フレームごとにログ出力
+                print(f"WebSocket送信: フレーム {frame_count}, オブジェクト数: {object_count}")
             await manager.broadcast(json.dumps(message))
 
             frame_count += 1
@@ -310,18 +335,62 @@ async def process_video_async(video_path: str):
 
     except asyncio.CancelledError:
         # 処理がキャンセルされた場合
+        print("動画処理がキャンセルされました")
         pass
+    except Exception as e:
+        print(f"動画処理エラー: {e}")
+        import traceback
+        traceback.print_exc()
+        await manager.broadcast(json.dumps({
+            "type": "error",
+            "message": f"動画処理中にエラーが発生しました: {str(e)}"
+        }))
     finally:
+        print("動画処理を終了します...")
         cap.release()
 
+        # 動画ライターをリリース
+        if current_detector and current_detector.video_writer is not None:
+            print(f"動画ライターをリリース中: {current_detector.output_path}")
+            current_detector.video_writer.release()
+            current_detector.video_writer = None  # 明示的にNoneに設定
+
+            # ファイルの書き込み完了を待機
+            import time
+            time.sleep(1.0)  # 1秒待機（少し長めに）
+
+            # ファイルの存在を確認
+            if os.path.exists(current_detector.output_path):
+                file_size = os.path.getsize(current_detector.output_path)
+                print(f"動画ファイルサイズ: {file_size} bytes")
+                if file_size == 0:
+                    print("警告: 動画ファイルのサイズが0です")
+                else:
+                    # ストリーミング用の動画を変換
+                    streaming_path = current_detector.output_path.replace('.mp4', '_streaming.mp4')
+                    print(f"ストリーミング用動画を変換中: {streaming_path}")
+                    if convert_video_for_streaming(current_detector.output_path, streaming_path):
+                        print(f"ストリーミング用動画変換完了: {streaming_path}")
+                    else:
+                        print("ストリーミング用動画変換に失敗しました")
+            else:
+                print("警告: 動画ファイルが存在しません")
+                # ディレクトリの内容を確認
+                outputs_dir = "outputs"
+                if os.path.exists(outputs_dir):
+                    files = os.listdir(outputs_dir)
+                    print(f"outputsディレクトリの内容: {files}")
+
         # 完了メッセージを送信
-        final_message = {
-            "type": "complete",
-            "total_frames": frame_count,
-            "final_count": current_detector.object_count,
-            "processing_time": asyncio.get_event_loop().time() - start_time
-        }
-        await manager.broadcast(json.dumps(final_message))
+        if current_detector:
+            print(f"最終カウント: {current_detector.object_count}")
+            final_message = {
+                "type": "complete",
+                "total_frames": frame_count,
+                "final_count": current_detector.object_count,
+                "processing_time": asyncio.get_event_loop().time() - start_time
+            }
+            await manager.broadcast(json.dumps(final_message))
 
 @app.get("/get-classes")
 async def get_classes():
@@ -353,6 +422,157 @@ async def get_classes():
         "23": "giraffe"
     }
     return classes
+
+def convert_video_for_streaming(input_path: str, output_path: str) -> bool:
+    """動画をブラウザ互換性の高い形式に変換"""
+    try:
+        # FFmpegコマンドで動画を変換
+        # -c:v libx264: H.264コーデック
+        # -profile:v baseline: ブラウザ互換性の高いベースラインプロファイル
+        # -pix_fmt yuv420p: ブラウザ互換性の高いピクセル形式
+        # -movflags +faststart: moov atomを先頭に配置（Fast Start）
+        # -crf 23: 品質設定（18-28の範囲、23が標準）
+        cmd = [
+            'ffmpeg', '-i', input_path,
+            '-c:v', 'libx264',
+            '-profile:v', 'baseline',
+            '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',
+            '-crf', '23',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-y',  # 上書き許可
+            output_path
+        ]
+
+        print(f"動画変換開始: {input_path} -> {output_path}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            print(f"動画変換完了: {output_path}")
+            return True
+        else:
+            print(f"動画変換エラー: {result.stderr}")
+            return False
+
+    except Exception as e:
+        print(f"動画変換例外: {e}")
+        return False
+
+@app.get("/stream-video/{file_id}")
+async def stream_video(file_id: str):
+    """検知済み動画をストリーミング"""
+    try:
+        # outputsディレクトリ内のファイルを検索
+        outputs_dir = "outputs"
+        if not os.path.exists(outputs_dir):
+            raise HTTPException(status_code=404, detail="出力ディレクトリが見つかりません")
+
+        # ストリーミング用の動画ファイルを検索
+        expected_streaming_filename = f"{file_id}_output_streaming.mp4"
+        streaming_path = os.path.join(outputs_dir, expected_streaming_filename)
+
+        print(f"検索対象ファイルID: {file_id}")
+        print(f"期待されるストリーミングファイル名: {expected_streaming_filename}")
+
+        # まずストリーミング用ファイルを確認
+        if os.path.exists(streaming_path):
+            output_filename = expected_streaming_filename
+            output_path = streaming_path
+            print(f"ストリーミング用ファイルが見つかりました: {output_filename}")
+        else:
+            # ストリーミング用ファイルが見つからない場合、元のファイルを検索
+            expected_filename = f"{file_id}_output.mp4"
+            output_path = os.path.join(outputs_dir, expected_filename)
+
+            if os.path.exists(output_path):
+                output_filename = expected_filename
+                print(f"元のファイルが見つかりました: {output_filename}")
+            else:
+                # ファイルIDを含むファイルを検索
+                matching_files = []
+                for filename in os.listdir(outputs_dir):
+                    if filename.endswith("_output.mp4") and file_id in filename:
+                        matching_files.append(filename)
+
+                if matching_files:
+                    # ファイルIDを含むファイルが見つかった場合、最新のものを選択
+                    matching_files.sort(key=lambda x: os.path.getctime(os.path.join(outputs_dir, x)), reverse=True)
+                    output_filename = matching_files[0]
+                    output_path = os.path.join(outputs_dir, output_filename)
+                    print(f"ファイルIDを含むファイルを選択: {output_filename}")
+                else:
+                    # それでも見つからない場合、最新のファイルを使用
+                    mp4_files = [f for f in os.listdir(outputs_dir) if f.endswith("_output.mp4")]
+                    print(f"利用可能な動画ファイル: {mp4_files}")
+                    if not mp4_files:
+                        raise HTTPException(status_code=404, detail="動画ファイルが見つかりません")
+                    # 最新のファイルを選択（作成日時順）
+                    mp4_files.sort(key=lambda x: os.path.getctime(os.path.join(outputs_dir, x)), reverse=True)
+                    output_filename = mp4_files[0]
+                    output_path = os.path.join(outputs_dir, output_filename)
+                    print(f"最新ファイルを選択: {output_filename}")
+
+        if not os.path.exists(output_path):
+            raise HTTPException(status_code=404, detail="動画ファイルが見つかりません")
+
+        print(f"ストリーミングファイル: {output_path}")
+
+        # ファイルを読み込んで返す
+        def iterfile():
+            with open(output_path, mode="rb") as file_like:
+                yield from file_like
+
+        return StreamingResponse(
+            iterfile(),
+            media_type="video/mp4",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Type": "video/mp4"
+            }
+        )
+    except Exception as e:
+        print(f"ストリーミングエラー: {e}")
+        raise HTTPException(status_code=500, detail=f"動画のストリーミングに失敗しました: {str(e)}")
+
+@app.get("/download-video/{file_id}")
+async def download_video(file_id: str):
+    """検知済み動画をダウンロード"""
+    try:
+        # ファイルIDに基づいて動画ファイルを検索
+        outputs_dir = "outputs"
+        expected_filename = f"{file_id}_output.mp4"
+        output_path = os.path.join(outputs_dir, expected_filename)
+
+        print(f"ダウンロード検索対象ファイルID: {file_id}")
+        print(f"期待されるファイル名: {expected_filename}")
+
+        if not os.path.exists(output_path):
+            # ファイルが見つからない場合、最新のファイルを使用
+            mp4_files = [f for f in os.listdir(outputs_dir) if f.endswith("_output.mp4")]
+            if not mp4_files:
+                raise HTTPException(status_code=404, detail="動画ファイルが見つかりません")
+            # 最新のファイルを選択（作成日時順）
+            mp4_files.sort(key=lambda x: os.path.getctime(os.path.join(outputs_dir, x)), reverse=True)
+            output_filename = mp4_files[0]
+            output_path = os.path.join(outputs_dir, output_filename)
+            print(f"最新ファイルをダウンロード: {output_filename}")
+        else:
+            print(f"ファイルが見つかりました: {expected_filename}")
+
+        # ファイルを読み込んで返す
+        def iterfile():
+            with open(output_path, mode="rb") as file_like:
+                yield from file_like
+
+        return StreamingResponse(
+            iterfile(),
+            media_type="video/mp4",
+            headers={"Content-Disposition": f"attachment; filename=detected_{file_id}.mp4"}
+        )
+    except Exception as e:
+        print(f"ダウンロードエラー: {e}")
+        raise HTTPException(status_code=500, detail=f"動画のダウンロードに失敗しました: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

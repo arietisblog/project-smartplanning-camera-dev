@@ -44,6 +44,10 @@ class ConfigurableObjectDetector:
         self.frame_count = 0  # フレームカウンター
         self.max_disappeared = self.config['tracking'].get('max_disappeared_frames', 30)  # 最大消失フレーム数
 
+        # 動画出力用の変数
+        self.video_writer = None
+        self.output_path = None
+
     def reset_counting(self):
         """カウント関連の変数をリセット"""
         self.object_count = 0
@@ -53,6 +57,35 @@ class ConfigurableObjectDetector:
         self.next_object_id = 1
         self.frame_count = 0
         self.max_distance = self.config['tracking'].get('max_distance', 100)  # 最大マッチング距離
+
+        # 動画出力もリセット
+        if self.video_writer is not None:
+            self.video_writer.release()
+            self.video_writer = None
+        self.output_path = None
+
+    def setup_video_writer(self, frame_width, frame_height, fps, output_path):
+        """動画ライターをセットアップ"""
+        if self.config['output']['save_video']:
+            # より互換性の高いH.264コーデックを使用
+            fourcc = cv2.VideoWriter_fourcc(*'H264')
+            self.video_writer = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+            self.output_path = output_path
+
+            # 動画ライターが正常に初期化されたかチェック
+            if self.video_writer.isOpened():
+                print(f"動画ライターをセットアップ: {output_path}")
+                print(f"コーデック: H264, 解像度: {frame_width}x{frame_height}, FPS: {fps}")
+            else:
+                print(f"警告: 動画ライターの初期化に失敗しました: {output_path}")
+                # フォールバック: MP4Vコーデックを試す
+                fourcc = cv2.VideoWriter_fourcc(*'MP4V')
+                self.video_writer = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+                if self.video_writer.isOpened():
+                    print(f"MP4Vコーデックで動画ライターをセットアップ: {output_path}")
+                else:
+                    print(f"エラー: 動画ライターの初期化に完全に失敗しました")
+                    self.video_writer = None
 
     def load_config(self, config_path):
         if not os.path.exists(config_path):
@@ -413,12 +446,18 @@ class ConfigurableObjectDetector:
         object_classes = self.config['detection']['object_classes']
         class_names = list(object_classes.values())
         if len(class_names) == 1:
-            display_text = f"{class_names[0].title()}sだよ: {self.object_count}"
+            display_text = f"{class_names[0].title()}s: {self.object_count}"
         else:
             display_text = f"Objects: {self.object_count}"
 
         cv2.putText(frame, display_text,
                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
+
+        # 動画を保存（設定で有効な場合）
+        if self.config['output']['save_video'] and self.video_writer is not None:
+            success = self.video_writer.write(frame)
+            if not success and self.frame_count % 30 == 0:  # 30フレームごとにログ出力
+                print(f"警告: フレーム {self.frame_count} の書き込みに失敗しました")
 
         return frame, self.object_count
 
