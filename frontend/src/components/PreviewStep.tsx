@@ -91,7 +91,7 @@ export default function PreviewStep({
                                         variant="outline"
                                         size="sm"
                                         onClick={() => removeObjectClass(key)}
-                                        className="border-red-500/50 text-red-400 hover:bg-red-500/20 text-xs px-2 py-1"
+                                        className="bg-slate-800 border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-slate-300 text-xs px-2 py-1"
                                     >
                                         削除
                                     </Button>

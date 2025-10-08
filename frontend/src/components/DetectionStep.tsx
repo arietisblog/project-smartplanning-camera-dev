@@ -7,6 +7,8 @@ import { useState } from 'react'
 interface DetectionStepProps {
   currentFrame: string | null
   objectCount: number
+  classCounts: { [key: string]: number }
+  availableClasses: Record<string, string>
   isProcessing: boolean
   frameCount: number
   fps: number
@@ -22,6 +24,8 @@ interface DetectionStepProps {
 export default function DetectionStep({
   currentFrame,
   objectCount,
+  classCounts,
+  availableClasses,
   isProcessing,
   frameCount,
   fps,
@@ -132,10 +136,33 @@ export default function DetectionStep({
 
           {/* 検知統計 */}
           <div className="space-y-3 p-3 bg-slate-800/30 rounded-lg border border-slate-700">
-            <div className="flex justify-between items-center">
-              <span className="text-sm text-gray-300">検知されたオブジェクト数</span>
-              <span className="text-lg text-green-400 font-bold">{objectCount}</span>
-            </div>
+            {/* クラス別カウント */}
+            {Object.keys(classCounts).length > 0 && (
+              <div className="space-y-2">
+                {Object.entries(classCounts).map(([classId, count]) => (
+                  <div key={classId} className="flex justify-between items-center">
+                    <span className="text-lg text-gray-300 font-bold">
+                      {availableClasses[classId] || `クラス${classId}`}
+                    </span>
+                    <span className="text-xl text-purple-400 font-extrabold">{count}</span>
+                  </div>
+                ))}
+                <div className="border-t border-slate-600 pt-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-300 font-semibold">合計</span>
+                    <span className="text-lg text-green-400 font-bold">{objectCount}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* クラス別カウントがない場合は従来の表示 */}
+            {Object.keys(classCounts).length === 0 && (
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-300">検知されたオブジェクト数</span>
+                <span className="text-lg text-green-400 font-bold">{objectCount}</span>
+              </div>
+            )}
 
             {isProcessing && (
               <>

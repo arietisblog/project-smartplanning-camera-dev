@@ -32,6 +32,7 @@ class ConfigurableObjectDetector:
         self.config = self.load_config(config_path)
         self.model = YOLO(self.config['model']['path'])
         self.object_count = 0
+        self.class_counts = {}  # クラス別カウンター
         self.tracked_objects = defaultdict(list)
         self.counting_line_y = None
         self.counting_line_angle = None
@@ -59,6 +60,7 @@ class ConfigurableObjectDetector:
     def reset_counting(self):
         """カウント関連の変数をリセット"""
         self.object_count = 0
+        self.class_counts = {}  # クラス別カウンターをリセット
         self.tracked_objects = defaultdict(list)
         self.counted_objects = set()
         self.objects = {}
@@ -159,6 +161,8 @@ class ConfigurableObjectDetector:
     def set_counting_line(self, frame_height, frame_width):
         line_ratio = self.config['counting']['line_ratio']
         line_angle = self.config['counting'].get('line_angle', 0.0)
+
+        print(f"set_counting_line: line_angle={line_angle}, line_ratio={line_ratio}")
 
         base_y = int(frame_height * line_ratio)
         self.counting_line_y = base_y
@@ -319,10 +323,19 @@ class ConfigurableObjectDetector:
         if self.counting_line_angle == 0:
             return self.counting_line_y
 
-        angle_rad = math.radians(self.counting_line_angle)
+        # 90度（垂直線）の場合は特別処理
+        if abs(self.counting_line_angle) == 90:
+            # 垂直線の場合はx座標を固定（画面中央）
+            center_x = frame_width / 2
+            return self.counting_line_y if x == center_x else None
+
+        # 角度の定義を修正：正の角度は右下がり、負の角度は右上がり
+        angle_rad = math.radians(-self.counting_line_angle)  # 符号を反転
         center_of_line_x = frame_width / 2
         relative_x = x - center_of_line_x
         y_offset = relative_x * math.tan(angle_rad)
+
+        print(f"get_line_y_at_x: angle={self.counting_line_angle}, angle_rad={angle_rad}, y_offset={y_offset}")
 
         return self.counting_line_y + y_offset
 
@@ -350,16 +363,33 @@ class ConfigurableObjectDetector:
         prev_center = track_history[-2]
         current_center = track_history[-1]
 
+        # 90度（垂直線）の場合は特別処理
+        if abs(self.counting_line_angle) == 90:
+            center_x = frame_width / 2
+            direction = self.config['counting']['direction']
+
+            if direction == "direction1":  # 左から右
+                return (prev_center[0] < center_x and current_center[0] >= center_x)
+            elif direction == "direction2":  # 右から左
+                return (prev_center[0] > center_x and current_center[0] <= center_x)
+            else:  # 両方向
+                return ((prev_center[0] < center_x and current_center[0] >= center_x) or
+                        (prev_center[0] > center_x and current_center[0] <= center_x))
+
         # 現在位置と前回位置でのカウントラインのY座標を計算
         current_line_y = self.get_line_y_at_x(current_center[0], frame_width, frame_height)
         prev_line_y = self.get_line_y_at_x(prev_center[0], frame_width, frame_height)
 
+        # Noneが返された場合は処理をスキップ
+        if current_line_y is None or prev_line_y is None:
+            return False
+
         direction = self.config['counting']['direction']
 
-        if direction == "upward":
+        if direction == "direction1":
             return (prev_center[1] > prev_line_y and
                     current_center[1] <= current_line_y)
-        elif direction == "downward":
+        elif direction == "direction2":
             return (prev_center[1] < prev_line_y and
                     current_center[1] >= current_line_y)
         else:
@@ -404,6 +434,13 @@ class ConfigurableObjectDetector:
             # ライン横断チェック
             if (not obj.is_counted and
                 self.has_crossed_line(obj, frame_width, frame_height)):
+                # クラス別カウント
+                class_id = str(obj.class_id)
+                if class_id not in self.class_counts:
+                    self.class_counts[class_id] = 0
+                self.class_counts[class_id] += 1
+
+                # 総カウントも更新
                 self.object_count += 1
                 obj.is_counted = True
                 self.counted_objects.add(object_id)
@@ -432,11 +469,20 @@ class ConfigurableObjectDetector:
                 # 水平線の場合
                 cv2.line(frame, (0, self.counting_line_y),
                         (frame_width, self.counting_line_y), line_color, 2)
+            elif abs(self.counting_line_angle) == 90:
+                # 垂直線の場合
+                center_x = int(frame_width / 2)
+                cv2.line(frame, (center_x, 0),
+                        (center_x, frame_height), line_color, 2)
             else:
                 # 角度付き線の場合
                 # 画面の左右端でのY座標を計算
-                left_y = int(self.get_line_y_at_x(0, frame_width, frame_height))
-                right_y = int(self.get_line_y_at_x(frame_width, frame_width, frame_height))
+                left_y = int(round(self.get_line_y_at_x(0, frame_width, frame_height)))
+                right_y = int(round(self.get_line_y_at_x(frame_width, frame_width, frame_height)))
+
+                # 座標が有効な範囲内にあることを確認
+                left_y = max(0, min(frame_height - 1, left_y))
+                right_y = max(0, min(frame_height - 1, right_y))
 
                 cv2.line(frame, (0, left_y), (frame_width, right_y), line_color, 2)
 
@@ -448,18 +494,23 @@ class ConfigurableObjectDetector:
                         (self.counting_zone['x2'], self.counting_zone['y2']),
                         zone_color, 2)
 
-        # オブジェクト数を表示
+        # オブジェクト数を表示（クラス別）
         text_color = tuple(self.config['display']['colors']['object_count_text'])
-        # 検知対象クラス名を取得して表示テキストを生成
         object_classes = self.config['detection']['object_classes']
-        class_names = list(object_classes.values())
-        if len(class_names) == 1:
-            display_text = f"{class_names[0].title()}s: {self.object_count}"
-        else:
-            display_text = f"Objects: {self.object_count}"
 
-        cv2.putText(frame, display_text,
-                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
+        # クラス別カウントを表示
+        y_offset = 30
+        for class_id, class_name in object_classes.items():
+            count = self.class_counts.get(class_id, 0)
+            display_text = f"{class_name.title()}s: {count}"
+            cv2.putText(frame, display_text,
+                       (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
+            y_offset += 40
+
+        # 総カウントも表示
+        if len(object_classes) > 1:
+            cv2.putText(frame, f"Total: {self.object_count}",
+                       (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
 
         # 動画を保存（設定で有効な場合）
         if self.config['output']['save_video'] and self.video_writer is not None:
@@ -472,67 +523,27 @@ class ConfigurableObjectDetector:
     def save_detection_results(self):
         """検知結果を保存"""
         print(f"save_detection_results called")
-        print(f"tracked_objects keys: {list(self.tracked_objects.keys())}")
-        print(f"counted_objects: {self.counted_objects}")
-        print(f"objects keys: {list(self.objects.keys())}")
+        print(f"class_counts: {self.class_counts}")
+        print(f"object_count: {self.object_count}")
 
-        # クラス別の検知数とカウント数を計算
-        detected_counts = {}
-        counted_counts = {}
-
-        for class_id in self.config['detection']['object_classes'].keys():
-            detected_counts[class_id] = 0
-            counted_counts[class_id] = 0
-
-        # objectsから検知数を計算（現在追跡中のオブジェクト）
-        total_detected = 0
-        for obj_id, obj in self.objects.items():
-            if hasattr(obj, 'class_id'):
-                class_id = str(obj.class_id)
-                if class_id in detected_counts:
-                    detected_counts[class_id] += 1
-                    total_detected += 1
-                    print(f"Detected object: id={obj_id}, class_id={class_id}")
-
-        # counted_objectsからカウント数を計算
-        total_counted = len(self.counted_objects)
-        for obj_id in self.counted_objects:
-            # counted_objectsにはobj_idが格納されているので、
-            # そのオブジェクトのクラスIDを取得
-            if obj_id in self.objects:
-                obj = self.objects[obj_id]
-                if hasattr(obj, 'class_id'):
-                    class_id = str(obj.class_id)
-                    if class_id in counted_counts:
-                        counted_counts[class_id] += 1
-                        print(f"Counted object: id={obj_id}, class_id={class_id}")
-
-        # 結果を保存
+        # 結果を保存（新しいクラス別カウントロジックを使用）
         self.final_detection_results = {
-            'detected_counts': detected_counts,
-            'counted_counts': counted_counts,
-            'total_detected': total_detected,
-            'total_counted': total_counted
+            'class_counts': self.class_counts,
+            'total_counted': self.object_count
         }
 
-        print(f"検知結果を保存: detected={total_detected}, counted={total_counted}")
-        print(f"detected_counts: {detected_counts}")
-        print(f"counted_counts: {counted_counts}")
+        print(f"検知結果を保存: class_counts={self.class_counts}, total_counted={self.object_count}")
 
     def get_detection_results(self):
         """検知結果を取得"""
         print(f"get_detection_results called")
+        print(f"class_counts: {self.class_counts}")
         print(f"object_count: {self.object_count}")
-
-        # フロントエンドで表示されている値を使用
-        # 検知数は現在追跡中のオブジェクト数、カウント数はobject_count
-        total_detected = len(self.objects)  # 現在追跡中のオブジェクト数
-        total_counted = self.object_count   # フロントエンドで表示されているカウント数
 
         return {
             'object_classes': self.config['detection']['object_classes'],
-            'total_detected': total_detected,
-            'total_counted': total_counted
+            'class_counts': self.class_counts,
+            'total_counted': self.object_count
         }
 
     def process_video(self, video_path=None, output_path=None):

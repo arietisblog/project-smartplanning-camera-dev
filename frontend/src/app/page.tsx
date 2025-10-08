@@ -19,6 +19,7 @@ interface WebSocketMessage {
   type: 'frame' | 'progress' | 'complete' | 'error'
   frame?: string
   object_count?: number
+  class_counts?: { [key: string]: number }
   frame_count?: number
   fps?: number
   total_frames?: number
@@ -35,6 +36,7 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [currentFrame, setCurrentFrame] = useState<string | null>(null)
   const [objectCount, setObjectCount] = useState(0)
+  const [classCounts, setClassCounts] = useState<{ [key: string]: number }>({})
   const [frameCount, setFrameCount] = useState(0)
   const [fps, setFps] = useState(0)
   const [progress, setProgress] = useState(0)
@@ -313,7 +315,7 @@ export default function Home() {
     ctx.setLineDash([])
 
     // 角度に応じて方向を計算
-    const angleRad = (lineAngle * Math.PI) / 180
+    const angleRad = (-lineAngle * Math.PI) / 180  // 符号を反転
     const perpendicularAngle = angleRad + Math.PI / 2 // ラインに垂直な角度
 
     if (direction === 'both') {
@@ -393,7 +395,7 @@ export default function Home() {
     // カウントラインを描画（角度対応）
     const baseLineY = offsetY + (drawHeight * config.line_ratio)
     const centerX = offsetX + drawWidth / 2
-    const angleRad = (config.line_angle * Math.PI) / 180
+    const angleRad = (-config.line_angle * Math.PI) / 180  // 符号を反転
 
     ctx.strokeStyle = '#8b5cf6' // violet-500
     ctx.lineWidth = 3
@@ -468,6 +470,9 @@ export default function Home() {
             if (message.object_count !== undefined) {
               setObjectCount(message.object_count)
             }
+            if (message.class_counts) {
+              setClassCounts(message.class_counts)
+            }
             if (message.frame_count !== undefined) {
               setFrameCount(message.frame_count)
             }
@@ -479,12 +484,18 @@ export default function Home() {
             if (message.total_frames && message.frame_count) {
               setProgress((message.frame_count / message.total_frames) * 100)
             }
+            if (message.class_counts) {
+              setClassCounts(message.class_counts)
+            }
             break
           case 'complete':
             setIsProcessing(false)
             setIsCompleted(true)
             if (message.final_count !== undefined) {
               setObjectCount(message.final_count)
+            }
+            if (message.class_counts) {
+              setClassCounts(message.class_counts)
             }
             break
           case 'error':
@@ -552,6 +563,8 @@ export default function Home() {
               <DetectionStep
                 currentFrame={currentFrame}
                 objectCount={objectCount}
+                classCounts={classCounts}
+                availableClasses={availableClasses}
                 isProcessing={isProcessing}
                 frameCount={frameCount}
                 fps={fps}

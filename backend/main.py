@@ -308,6 +308,7 @@ async def process_video_async(video_path: str):
                 "type": "frame",
                 "frame": frame_base64,
                 "object_count": object_count,
+                "class_counts": current_detector.class_counts,
                 "frame_count": frame_count,
                 "fps": fps
             }
@@ -326,6 +327,7 @@ async def process_video_async(video_path: str):
                     "type": "progress",
                     "frame_count": frame_count,
                     "object_count": object_count,
+                    "class_counts": current_detector.class_counts,
                     "fps": fps_processed
                 }
                 await manager.broadcast(json.dumps(progress_message))
@@ -392,6 +394,7 @@ async def process_video_async(video_path: str):
                 "type": "complete",
                 "total_frames": frame_count,
                 "final_count": current_detector.object_count,
+                "class_counts": current_detector.class_counts,
                 "processing_time": asyncio.get_event_loop().time() - start_time
             }
             await manager.broadcast(json.dumps(final_message))
@@ -430,6 +433,18 @@ async def get_classes():
 def convert_video_for_streaming(input_path: str, output_path: str) -> bool:
     """動画をブラウザ互換性の高い形式に変換"""
     try:
+        # まず入力ファイルの存在とサイズを確認
+        if not os.path.exists(input_path):
+            print(f"入力ファイルが存在しません: {input_path}")
+            return False
+
+        file_size = os.path.getsize(input_path)
+        if file_size == 0:
+            print(f"入力ファイルのサイズが0です: {input_path}")
+            return False
+
+        print(f"入力ファイルサイズ: {file_size} bytes")
+
         # FFmpegコマンドで動画を変換
         # -c:v libx264: H.264コーデック
         # -profile:v baseline: ブラウザ互換性の高いベースラインプロファイル
@@ -453,8 +468,13 @@ def convert_video_for_streaming(input_path: str, output_path: str) -> bool:
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode == 0:
-            print(f"動画変換完了: {output_path}")
-            return True
+            # 出力ファイルの存在とサイズを確認
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                print(f"動画変換完了: {output_path}")
+                return True
+            else:
+                print(f"出力ファイルが正しく作成されませんでした: {output_path}")
+                return False
         else:
             print(f"動画変換エラー: {result.stderr}")
             return False
@@ -577,14 +597,17 @@ def generate_csv_content(detection_results: dict) -> str:
     # ヘッダー行
     writer.writerow(['クラス名', 'カウント数'])
 
-    # データ行
+    # データ行（クラス別）
+    class_counts = detection_results.get('class_counts', {})
+    total_counted = 0
+
     for class_id, class_name in detection_results.get('object_classes', {}).items():
-        # カウント数は実際のカウント数
-        counted_count = detection_results.get('total_counted', 0)
+        # クラス別のカウント数
+        counted_count = class_counts.get(class_id, 0)
         writer.writerow([class_name, counted_count])
+        total_counted += counted_count
 
     # 合計行
-    total_counted = detection_results.get('total_counted', 0)
     writer.writerow(['合計', total_counted])
 
     return output.getvalue()
