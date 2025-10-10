@@ -94,9 +94,9 @@ class ConfigurableObjectDetector:
                 "colors": {
                     "counted_object": [0, 255, 0],    # カウント済みオブジェクトのバウンディングボックス色 (BGR)
                     "uncounted_object": [0, 0, 255],  # 未カウントオブジェクトのバウンディングボックス色 (BGR)
-                    "counting_line": [255, 0, 0],      # カウントラインの色 (BGR)
-                    "counting_zone": [255, 255, 0],    # カウントゾーンの色 (BGR)
-                    "object_count_text": [0, 255, 255] # オブジェクト数テキストの色 (BGR)
+                    "counting_line": [0, 165, 255],      # カウントラインの色 (BGR, オレンジ)
+                    "counting_zone": [60, 180, 75],      # カウントゾーンの色 (BGR, 黄緑)
+                    "object_count_text": [255, 255, 255] # オブジェクト数テキストの色 (BGR, 白)
                 }
             },
             "output": {
@@ -400,11 +400,31 @@ class ConfigurableObjectDetector:
         object_classes = self.config['detection']['object_classes']
         class_names = list(object_classes.values())
         if len(class_names) == 1:
-            display_text = f"{class_names[0].title()}s: {self.object_count}"
+            display_text = f"Counted {class_names[0].title()}s: {self.object_count}"
         else:
             display_text = f"Objects: {self.object_count}"
+
+        # 文字サイズとフォントを設定
+        font_scale = 1.0  # 文字サイズを大きくする
+        font_thickness = 2  # 文字の太さを増やす
+
+        # テキストのサイズを取得
+        (text_width, text_height), baseline = cv2.getTextSize(display_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
+
+        # テキストの位置を計算（上端から十分な距離を確保）
+        padding = 10
+        text_x = 12
+        text_y = text_height + padding + 4  # 上端から十分な距離を確保
+
+        # 背景の白い四角形を描画
+        cv2.rectangle(frame,
+                     (text_x - padding, text_y - text_height - padding),
+                     (text_x + text_width + padding, text_y + baseline + padding),
+                     (255, 255, 255), -1)  # 白い背景
+
+        # テキストを描画
         cv2.putText(frame, display_text,
-                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
+                   (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_color, font_thickness)
 
         return frame, self.object_count
 
