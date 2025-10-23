@@ -1,6 +1,6 @@
 {
     "input": {
-        "video_path": "32624-392660211_small.mp4",
+        "video_path": "6387-191695740_small.mp4",
         "output_directory": "outputs"
     },
     "model": {
@@ -9,7 +9,7 @@
     },
     "detection": {
         "object_classes": {
-            "1": "bicycle"
+            "0": "person"
         },
         "tracking_history_frames": 10,
         "min_counting_interval": 2.0,
@@ -21,7 +21,7 @@
         "min_confidence": 0.5
     },
     "counting": {
-        "line_angle": 89.9,
+        "line_angle": 0,
         "line_ratio": 0.45,
         "zone_ratio": 1.0,
         "direction": "both"
@@ -62,5 +62,14 @@
         "save_video": true,
         "video_codec": "mp4v",
         "screenshot_format": "jpg"
+    },
+    "representative_images": {
+        "enabled": true,
+        "max_images_per_object": 5,
+        "save_interval_frames": 5,
+        "cleanup_interval_seconds": 30,
+        "max_storage_mb": 100,
+        "image_format": "jpg",
+        "save_directory": "representative_images"
     }
 }
