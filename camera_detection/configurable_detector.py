@@ -8,8 +8,20 @@ import json
 import os
 import math
 from scipy.optimize import linear_sum_assignment
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
+import shutil
+
+@dataclass
+class RepresentativeImage:
+    """代表画像の情報を格納するデータクラス"""
+    object_id: int
+    image_path: str
+    timestamp: float
+    frame_number: int
+    bbox: List[float]
+    confidence: float
+    last_updated: float
 
 @dataclass
 class DetectedObject:
@@ -22,10 +34,316 @@ class DetectedObject:
     last_seen: int  # 最後に見られたフレーム番号
     is_counted: bool = False
     track_history: List[Tuple[float, float]] = None  # 中心点の履歴
+    representative_images: List[RepresentativeImage] = field(default_factory=list)  # 代表画像リスト
+    candidate_images: List[RepresentativeImage] = field(default_factory=list)  # 候補画像リスト（大量収集用）
+    is_finalized: bool = False  # 最終選択済みかどうか
 
     def __post_init__(self):
         if self.track_history is None:
             self.track_history = [self.center]
+
+class RepresentativeImageManager:
+    """代表画像の管理を行うクラス"""
+
+    def __init__(self, config: dict):
+        self.config = config
+        base_directory = config.get('representative_images', {}).get('save_directory', 'representative_images')
+
+        # 日時分秒を追加したディレクトリ名を生成
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.save_directory = f"{base_directory}_{timestamp}"
+
+        self.max_images_per_object = config.get('representative_images', {}).get('max_images_per_object', 5)
+        self.image_quality_threshold = config.get('representative_images', {}).get('image_quality_threshold', 0.7)
+        self.image_format = config.get('representative_images', {}).get('image_format', 'jpg')
+
+        # 保存ディレクトリを作成
+        if not os.path.exists(self.save_directory):
+            os.makedirs(self.save_directory)
+            print(f"代表画像保存ディレクトリを作成しました: {self.save_directory}")
+
+    def save_candidate_image(self, obj: DetectedObject, frame: np.ndarray, frame_number: int) -> bool:
+        """
+        候補画像を大量収集（最終選択前の収集フェーズ）
+
+        Args:
+            obj: 検知されたオブジェクト
+            frame: 現在のフレーム
+            frame_number: フレーム番号
+
+        Returns:
+            bool: 保存に成功した場合True
+        """
+        if not obj.is_counted or obj.is_finalized:
+            return False
+
+        # 基本的な品質チェック（極端に低いもののみ除外）
+        if obj.confidence < 0.2:  # より緩い条件で大量収集
+            return False
+
+        # バウンディングボックスの基本的なサイズチェック
+        x1, y1, x2, y2 = obj.bbox
+        bbox_width = x2 - x1
+        bbox_height = y2 - y1
+        bbox_area = bbox_width * bbox_height
+
+        # 極端に小さいもののみ除外
+        if bbox_area < 50:  # より緩い条件
+            return False
+
+        # バウンディングボックスから画像を切り出し
+        x1, y1, x2, y2 = map(int, obj.bbox)
+
+        # 境界チェック
+        h, w = frame.shape[:2]
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(w, x2)
+        y2 = min(h, y2)
+
+        if x2 <= x1 or y2 <= y1:
+            return False
+
+        # 画像を切り出し
+        cropped_image = frame[y1:y2, x1:x2]
+
+        if cropped_image.size == 0:
+            return False
+
+        # ファイル名を生成（候補用）
+        timestamp = time.time()
+        filename = f"obj_{obj.id}_candidate_{len(obj.candidate_images)}_{timestamp:.0f}.{self.image_format}"
+        image_path = os.path.join(self.save_directory, filename)
+
+        # 画像を保存
+        try:
+            cv2.imwrite(image_path, cropped_image)
+
+            # RepresentativeImageオブジェクトを作成
+            rep_image = RepresentativeImage(
+                object_id=obj.id,
+                image_path=image_path,
+                timestamp=timestamp,
+                frame_number=frame_number,
+                bbox=obj.bbox.copy(),
+                confidence=obj.confidence,
+                last_updated=timestamp
+            )
+
+            # 候補画像リストに追加（制限なしで大量収集）
+            obj.candidate_images.append(rep_image)
+
+            return True
+
+        except Exception as e:
+            print(f"候補画像保存エラー: {e}")
+            return False
+
+    def _optimize_representative_images(self, obj: DetectedObject):
+        """代表画像を最適化（オブジェクトごとの相対評価）"""
+        if len(obj.representative_images) <= self.max_images_per_object:
+            return
+
+        # このオブジェクトの信頼度とサイズの範囲を取得
+        confidences = [img.confidence for img in obj.representative_images]
+        bbox_areas = []
+        for img in obj.representative_images:
+            x1, y1, x2, y2 = img.bbox
+            bbox_areas.append((x2 - x1) * (y2 - y1))
+
+        # 正規化用の範囲を計算
+        min_conf = min(confidences)
+        max_conf = max(confidences)
+        min_area = min(bbox_areas)
+        max_area = max(bbox_areas)
+
+        # 各画像の相対スコアを計算
+        def calculate_relative_score(img):
+            # バウンディングボックスサイズ
+            x1, y1, x2, y2 = img.bbox
+            bbox_area = (x2 - x1) * (y2 - y1)
+
+            # 相対信頼度スコア（このオブジェクト内での相対位置）
+            if max_conf > min_conf:
+                relative_confidence = (img.confidence - min_conf) / (max_conf - min_conf)
+            else:
+                relative_confidence = 1.0  # すべて同じ信頼度の場合
+
+            # 相対サイズスコア（このオブジェクト内での相対位置）
+            if max_area > min_area:
+                relative_size = (bbox_area - min_area) / (max_area - min_area)
+            else:
+                relative_size = 1.0  # すべて同じサイズの場合
+
+            # 時間分散スコア（他の画像との時間差の平均）
+            time_diffs = []
+            for other_img in obj.representative_images:
+                if other_img != img:
+                    time_diff = abs(img.timestamp - other_img.timestamp)
+                    time_diffs.append(time_diff)
+
+            # 時間分散スコア（時間差の平均を正規化）
+            avg_time_diff = sum(time_diffs) / len(time_diffs) if time_diffs else 0
+            time_diversity_score = min(avg_time_diff / 10.0, 1.0)  # 10秒で正規化
+
+            # 総合スコア（重み付き）
+            total_score = (
+                relative_confidence * 0.4 +      # 相対信頼度 40%
+                relative_size * 0.3 +             # 相対サイズ 30%
+                time_diversity_score * 0.3        # 時間分散 30%
+            )
+
+            return total_score
+
+        # スコアでソート
+        scored_images = [(img, calculate_relative_score(img)) for img in obj.representative_images]
+        scored_images.sort(key=lambda x: x[1], reverse=True)
+
+        # 上位の画像を保持
+        keep_images = [img for img, score in scored_images[:self.max_images_per_object]]
+
+        # 削除する画像を特定
+        images_to_remove = [img for img in obj.representative_images if img not in keep_images]
+
+        # 不要な画像を削除
+        for img in images_to_remove:
+            try:
+                if os.path.exists(img.image_path):
+                    os.remove(img.image_path)
+                obj.representative_images.remove(img)
+            except Exception as e:
+                print(f"画像削除エラー: {e}")
+
+    def _remove_oldest_image(self, obj: DetectedObject):
+        """最も古い代表画像を削除（後方互換性のため残す）"""
+        if not obj.representative_images:
+            return
+
+        # 最も古い画像を特定（信頼度が低い順）
+        oldest_image = min(obj.representative_images, key=lambda x: (x.confidence, x.timestamp))
+
+        try:
+            # ファイルを削除
+            if os.path.exists(oldest_image.image_path):
+                os.remove(oldest_image.image_path)
+            # リストから削除
+            obj.representative_images.remove(oldest_image)
+        except Exception as e:
+            print(f"画像削除エラー: {e}")
+
+    def cleanup_old_images(self, objects: Dict[int, DetectedObject], current_time: float, cleanup_interval: float = 30.0):
+        """一定期間カウントされていないオブジェクトの画像を削除"""
+        objects_to_remove = []
+
+        for object_id, obj in objects.items():
+            # 一定期間カウントされていないオブジェクトの画像を削除
+            if current_time - obj.last_seen > cleanup_interval:
+                self._remove_all_images(obj)
+                objects_to_remove.append(object_id)
+
+        # オブジェクトを削除
+        for object_id in objects_to_remove:
+            del objects[object_id]
+
+    def _remove_all_images(self, obj: DetectedObject):
+        """オブジェクトのすべての代表画像を削除"""
+        for rep_image in obj.representative_images:
+            try:
+                if os.path.exists(rep_image.image_path):
+                    os.remove(rep_image.image_path)
+            except Exception as e:
+                print(f"画像削除エラー: {e}")
+
+        obj.representative_images.clear()
+
+    def finalize_representative_images(self, obj: DetectedObject):
+        """
+        候補画像から最適な5枚を最終選択
+
+        Args:
+            obj: 検知されたオブジェクト
+        """
+        if obj.is_finalized or len(obj.candidate_images) == 0:
+            return
+
+        # 候補画像が5枚以下の場合はそのまま採用
+        if len(obj.candidate_images) <= self.max_images_per_object:
+            obj.representative_images = obj.candidate_images.copy()
+            obj.is_finalized = True
+            return
+
+        # 候補画像のスコアを計算
+        def calculate_final_score(img):
+            # バウンディングボックスサイズ
+            x1, y1, x2, y2 = img.bbox
+            bbox_area = (x2 - x1) * (y2 - y1)
+
+            # このオブジェクトの信頼度とサイズの範囲を取得
+            confidences = [candidate.confidence for candidate in obj.candidate_images]
+            bbox_areas = []
+            for candidate in obj.candidate_images:
+                x1, y1, x2, y2 = candidate.bbox
+                bbox_areas.append((x2 - x1) * (y2 - y1))
+
+            min_conf = min(confidences)
+            max_conf = max(confidences)
+            min_area = min(bbox_areas)
+            max_area = max(bbox_areas)
+
+            # 相対信頼度スコア
+            if max_conf > min_conf:
+                relative_confidence = (img.confidence - min_conf) / (max_conf - min_conf)
+            else:
+                relative_confidence = 1.0
+
+            # 相対サイズスコア
+            if max_area > min_area:
+                relative_size = (bbox_area - min_area) / (max_area - min_area)
+            else:
+                relative_size = 1.0
+
+            # 時間分散スコア（他の候補画像との時間差の平均）
+            time_diffs = []
+            for other_img in obj.candidate_images:
+                if other_img != img:
+                    time_diff = abs(img.timestamp - other_img.timestamp)
+                    time_diffs.append(time_diff)
+
+            avg_time_diff = sum(time_diffs) / len(time_diffs) if time_diffs else 0
+            time_diversity_score = min(avg_time_diff / 10.0, 1.0)
+
+            # 総合スコア
+            total_score = (
+                relative_confidence * 0.4 +      # 相対信頼度 40%
+                relative_size * 0.3 +             # 相対サイズ 30%
+                time_diversity_score * 0.3        # 時間分散 30%
+            )
+
+            return total_score
+
+        # スコアでソートして上位5枚を選択
+        scored_images = [(img, calculate_final_score(img)) for img in obj.candidate_images]
+        scored_images.sort(key=lambda x: x[1], reverse=True)
+
+        # 上位5枚を代表画像として採用
+        selected_images = [img for img, score in scored_images[:self.max_images_per_object]]
+        obj.representative_images = selected_images
+
+        # 不要な候補画像を削除
+        for img in obj.candidate_images:
+            if img not in selected_images:
+                try:
+                    if os.path.exists(img.image_path):
+                        os.remove(img.image_path)
+                except Exception as e:
+                    print(f"候補画像削除エラー: {e}")
+
+        # 候補画像リストをクリア
+        obj.candidate_images.clear()
+        obj.is_finalized = True
+
+        print(f"オブジェクト {obj.id}: {len(selected_images)}枚の代表画像を最終選択しました")
 
 class ConfigurableObjectDetector:
     def __init__(self, config_path='config.json'):
@@ -44,6 +362,10 @@ class ConfigurableObjectDetector:
         self.frame_count = 0  # フレームカウンター
         self.max_disappeared = self.config['tracking'].get('max_disappeared_frames', 30)  # 最大消失フレーム数
         self.max_distance = self.config['tracking'].get('max_distance', 100)  # 最大マッチング距離
+
+        # 代表画像管理
+        self.image_manager = RepresentativeImageManager(self.config)
+        self.last_cleanup_time = time.time()
 
     def load_config(self, config_path):
         if not os.path.exists(config_path):
@@ -103,6 +425,15 @@ class ConfigurableObjectDetector:
                 "save_video": False,
                 "video_codec": "mp4v", # 出力動画のコーデック
                 "screenshot_format": "jpg" # スクリーンショットのフォーマット
+            },
+            "representative_images": {
+                "enabled": True,
+                "max_images_per_object": 5,
+                "save_interval_frames": 10,
+                "cleanup_interval_seconds": 30,
+                "max_storage_mb": 100,
+                "image_format": "jpg",
+                "save_directory": "representative_images"
             }
         }
 
@@ -319,6 +650,9 @@ class ConfigurableObjectDetector:
         frame_height, frame_width = frame.shape[:2]
         self.frame_count += 1
 
+        # 元のフレームを保存（描画前の状態）
+        original_frame = frame.copy()
+
         # YOLOで検出
         results = self.model(frame, verbose=False)
 
@@ -345,6 +679,21 @@ class ConfigurableObjectDetector:
         # ハンガリアンアルゴリズムでオブジェクト追跡を更新
         self.update_object_tracking(detections)
 
+        # 定期的なクリーンアップ（30秒ごと）
+        current_time = time.time()
+        if current_time - self.last_cleanup_time > 30:
+            cleanup_interval = self.config.get('representative_images', {}).get('cleanup_interval_seconds', 30)
+            self.image_manager.cleanup_old_images(self.objects, current_time, cleanup_interval)
+            self.last_cleanup_time = current_time
+
+        # 消失したオブジェクトの最終選択処理
+        for object_id, obj in list(self.objects.items()):
+            if (obj.is_counted and
+                not obj.is_finalized and
+                self.frame_count - obj.last_seen > 5):  # 5フレーム消失したら最終選択
+                print(f"オブジェクト {obj.id} の最終選択を実行します（候補画像数: {len(obj.candidate_images)}）")
+                self.image_manager.finalize_representative_images(obj)
+
         # オブジェクトのカウントと描画
         for object_id, obj in self.objects.items():
             # ライン横断チェック
@@ -353,6 +702,44 @@ class ConfigurableObjectDetector:
                 self.object_count += 1
                 obj.is_counted = True
                 self.counted_objects.add(object_id)
+
+                # 代表画像を保存（カウントされた瞬間）
+                if self.config.get('representative_images', {}).get('enabled', True):
+                    self.image_manager.save_candidate_image(obj, original_frame, self.frame_count)
+
+            # カウント済みオブジェクトの候補画像収集（大量収集フェーズ）
+            if (obj.is_counted and
+                not obj.is_finalized and
+                self.config.get('representative_images', {}).get('enabled', True)):
+                # 候補画像を積極的に収集
+                should_save = False
+
+                # 1. 定期的な保存（フレーム間隔）
+                save_interval = self.config.get('representative_images', {}).get('save_interval_frames', 5)
+                if self.frame_count % save_interval == 0:
+                    should_save = True
+
+                # 2. 信頼度が高い場合の追加保存
+                if obj.confidence > 0.6:  # 中程度の信頼度でも保存
+                    should_save = True
+
+                # 3. バウンディングボックスが大きい場合の追加保存
+                x1, y1, x2, y2 = obj.bbox
+                bbox_area = (x2 - x1) * (y2 - y1)
+                if bbox_area > 2000:  # 中程度のサイズでも保存
+                    should_save = True
+
+                # 4. 最後の保存から一定時間経過した場合
+                if obj.candidate_images:
+                    last_save_time = max(img.timestamp for img in obj.candidate_images)
+                    if time.time() - last_save_time > 1.0:  # 1秒経過したら保存
+                        should_save = True
+                else:
+                    # 初回は必ず保存
+                    should_save = True
+
+                if should_save:
+                    self.image_manager.save_candidate_image(obj, original_frame, self.frame_count)
 
             # バウンディングボックスを描画
             colors = self.config['display']['colors']
@@ -522,6 +909,12 @@ class ConfigurableObjectDetector:
                 elapsed_time = time.time() - start_time
                 fps_processed = frame_count / elapsed_time
                 print(f"処理済みフレーム: {frame_count}, オブジェクト数: {object_count}, FPS: {fps_processed:.1f}")
+
+        # 残りのオブジェクトの最終選択処理
+        for object_id, obj in self.objects.items():
+            if obj.is_counted and not obj.is_finalized:
+                print(f"動画終了時: オブジェクト {obj.id} の最終選択を実行します（候補画像数: {len(obj.candidate_images)}）")
+                self.image_manager.finalize_representative_images(obj)
 
         # リソースを解放
         cap.release()
